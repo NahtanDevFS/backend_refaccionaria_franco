@@ -1,4 +1,4 @@
-// app.ts (Ejemplo rápido de cómo se monta)
+// app.ts
 import express from "express";
 import { Pool } from "pg";
 import { crearVentaRouter } from "./routes/venta.routes";
