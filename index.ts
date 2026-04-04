@@ -4,7 +4,7 @@ import { Pool } from "pg";
 import { crearVentaRouter } from "./routes/venta.routes";
 
 const app = express();
-app.use(express.json()); // CRÍTICO para poder leer req.body
+app.use(express.json()); //para leer req.body
 
 const dbPool = new Pool({
   host: "localhost",
