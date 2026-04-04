@@ -7,6 +7,8 @@ import { crearVentaRouter } from "./routes/venta.routes";
 import { crearCajaRouter } from "./routes/caja.routes";
 import { crearInventarioRouter } from "./routes/inventario.routes";
 import { crearClienteRouter } from "./routes/cliente.routes";
+import { crearPedidoRouter } from "./routes/pedido.routes";
+import { crearArqueoRouter } from "./routes/arqueo.routes";
 
 const app = express();
 app.use(express.json());
@@ -25,6 +27,8 @@ app.use("/api/ventas", crearVentaRouter(dbPool));
 app.use("/api/caja", crearCajaRouter(dbPool));
 app.use("/api/inventario", crearInventarioRouter(dbPool));
 app.use("/api/clientes", crearClienteRouter(dbPool));
+app.use("/api/pedidos", crearPedidoRouter(dbPool));
+app.use("/api/arqueos", crearArqueoRouter(dbPool));
 
 const PORT = process.env.PORT || 3000;
 
