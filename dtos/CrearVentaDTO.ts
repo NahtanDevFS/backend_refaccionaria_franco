@@ -14,4 +14,5 @@ export interface CrearVentaDTO {
   canal: CanalVenta;
   detalles: CrearDetalleVentaDTO[];
   descuento_porcentaje_solicitado?: number; // El vendedor envía el % deseado (ej. 5)
+  id_supervisor_autoriza?: number;
 }
