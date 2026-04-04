@@ -26,7 +26,7 @@ export class PagoRepository implements IPagoRepository {
 
       // 1. Insertamos el registro del pago
       const insertPagoQuery = `
-        INSERT INTO pago (id_venta, id_cajero, metodo_pago, monto, referencia, uuid_factura, created_at)
+        INSERT INTO pago (id_venta, id_cajero, metodo_pago, monto, referencia, uuid_factura, fecha_pago)
         VALUES ($1, $2, $3, $4, $5, $6, NOW());
       `;
       const pagoValues = [
@@ -53,7 +53,7 @@ export class PagoRepository implements IPagoRepository {
       // Hacemos un UPDATE al stock basándonos en los detalles de la venta.
       const updateStockQuery = `
         UPDATE inventario_sucursal iv
-        SET stock_actual = iv.stock_actual - dv.cantidad
+        SET cantidad_actual = iv.cantidad_actual - dv.cantidad
         FROM detalle_venta dv, venta v
         WHERE dv.id_venta = v.id_venta
           AND dv.id_producto = iv.id_producto

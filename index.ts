@@ -1,22 +1,31 @@
-// app.ts
+// index.ts
 import express from "express";
 import { Pool } from "pg";
+import "dotenv/config"; // Carga las variables del archivo .env automáticamente
+
 import { crearVentaRouter } from "./routes/venta.routes";
+import { crearCajaRouter } from "./routes/caja.routes"; // Importamos el router de caja
 
 const app = express();
-app.use(express.json()); //para leer req.body
+app.use(express.json());
 
+// Instanciamos el Pool leyendo las variables de entorno de forma segura
 const dbPool = new Pool({
-  host: "localhost",
-  port: 5432,
-  database: "proyecto_refaccionaria_franco",
-  user: "postgres",
-  password: "pass123",
+  host: process.env.DB_HOST,
+  port: Number(process.env.DB_PORT),
+  database: process.env.DB_NAME,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
 });
 
-// Montamos el router
+// Montamos los routers inyectando la conexión a la base de datos
 app.use("/api/ventas", crearVentaRouter(dbPool));
+app.use("/api/caja", crearCajaRouter(dbPool));
 
-app.listen(3000, () => console.log("Servidor corriendo en el puerto 3000"));
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`Servidor corriendo de forma segura en el puerto ${PORT}`);
+});
 
 //npm run dev

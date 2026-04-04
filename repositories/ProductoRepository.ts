@@ -15,7 +15,7 @@ export class ProductoRepository implements IProductoRepository {
     id_sucursal: number,
   ): Promise<{ precio_venta: number; stock_actual: number } | null> {
     const query = `
-      SELECT p.precio_venta, i.stock_actual
+      SELECT p.precio_venta, i.cantidad_actual AS stock_actual
       FROM producto p
       INNER JOIN inventario_sucursal i ON p.id_producto = i.id_producto
       WHERE p.id_producto = $1 AND i.id_sucursal = $2;
