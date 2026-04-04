@@ -18,3 +18,5 @@ const dbPool = new Pool({
 app.use("/api/ventas", crearVentaRouter(dbPool));
 
 app.listen(3000, () => console.log("Servidor corriendo en el puerto 3000"));
+
+//npm run dev
