@@ -1,10 +1,12 @@
 // index.ts
 import express from "express";
 import { Pool } from "pg";
-import "dotenv/config"; // Carga las variables del archivo .env automáticamente
+import "dotenv/config";
 
 import { crearVentaRouter } from "./routes/venta.routes";
-import { crearCajaRouter } from "./routes/caja.routes"; // Importamos el router de caja
+import { crearCajaRouter } from "./routes/caja.routes";
+import { crearInventarioRouter } from "./routes/inventario.routes";
+import { crearClienteRouter } from "./routes/cliente.routes";
 
 const app = express();
 app.use(express.json());
@@ -21,6 +23,8 @@ const dbPool = new Pool({
 // Montamos los routers inyectando la conexión a la base de datos
 app.use("/api/ventas", crearVentaRouter(dbPool));
 app.use("/api/caja", crearCajaRouter(dbPool));
+app.use("/api/inventario", crearInventarioRouter(dbPool));
+app.use("/api/clientes", crearClienteRouter(dbPool));
 
 const PORT = process.env.PORT || 3000;
 
