@@ -7,7 +7,7 @@ export interface SolicitarGarantiaDTO {
 }
 
 export interface ResolverGarantiaDTO {
-  id_supervisor_aprueba: number;
+  //id_supervisor_aprueba: number;
   estado: EstadoGarantia.APROBADA | EstadoGarantia.RECHAZADA;
   resolucion: string;
 }

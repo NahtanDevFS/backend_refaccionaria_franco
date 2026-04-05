@@ -35,11 +35,18 @@ export class GarantiaService {
     return await this.garantiaRepository.crearSolicitud(dto);
   }
 
-  async procesarResolucion(id_garantia: number, dto: ResolverGarantiaDTO) {
-    // Aquí, si la resolución es 'aprobada', en un escenario más complejo
-    // deberíamos conectarnos al InventarioRepository para ingresar la pieza mala
-    // a una bodega de "descarte" y sacar una pieza nueva.
-    // Por ahora, registramos la resolución del supervisor.
-    return await this.garantiaRepository.resolverGarantia(id_garantia, dto);
+  async procesarResolucion(
+    id_garantia: number,
+    dto: ResolverGarantiaDTO,
+    id_supervisor: number,
+    id_usuario: number,
+  ) {
+    // Ya no llamamos a resolverGarantia, llamamos al nuevo método transaccional
+    return await this.garantiaRepository.resolverGarantiaConInventario(
+      id_garantia,
+      dto,
+      id_supervisor,
+      id_usuario,
+    );
   }
 }
