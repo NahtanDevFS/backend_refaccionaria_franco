@@ -13,6 +13,7 @@ import { crearArqueoRouter } from "./routes/arqueo.routes";
 import { crearGarantiaRouter } from "./routes/garantia.routes";
 import { crearMetaRouter } from "./routes/meta.routes";
 import { crearAuthRouter } from "./routes/auth.routes";
+import { crearBodegaRouter } from "./routes/bodega.routes";
 
 const app = express();
 app.use(express.json());
@@ -41,6 +42,7 @@ app.use("/api/pedidos", crearPedidoRouter(dbPool));
 app.use("/api/arqueos", crearArqueoRouter(dbPool));
 app.use("/api/garantias", crearGarantiaRouter(dbPool));
 app.use("/api/metas", crearMetaRouter(dbPool));
+app.use("/api/bodega", crearBodegaRouter(dbPool));
 
 const PORT = process.env.PORT || 3000;
 
