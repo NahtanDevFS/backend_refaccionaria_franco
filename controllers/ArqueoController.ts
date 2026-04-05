@@ -1,4 +1,3 @@
-// controllers/ArqueoController.ts
 import { Request, Response } from "express";
 import { ArqueoService } from "../services/ArqueoService";
 import { generarArqueoSchema } from "../schemas/arqueo.schema";
@@ -10,13 +9,20 @@ export class ArqueoController {
   procesarCierre = async (req: Request, res: Response): Promise<void> => {
     try {
       // 1. Validación estricta del payload (Zod)
-      const dtoValidado = generarArqueoSchema.parse(req.body);
+      const payload = generarArqueoSchema.parse(req.body);
 
-      // 2. Ejecutar la auditoría a través del servicio
+      // 2. Inyectar IDs seguros para la auditoría
+      const dtoValidado = {
+        ...payload,
+        id_sucursal: req.usuario!.id_sucursal,
+        id_supervisor_verifica: req.usuario!.id_empleado,
+      };
+
+      // 3. Ejecutar la auditoría a través del servicio
       const resultado =
         await this.arqueoService.procesarCierreDeCaja(dtoValidado);
 
-      // 3. Responder al cliente
+      // 4. Responder al cliente
       res.status(201).json(resultado);
     } catch (error) {
       if (error instanceof ZodError) {
