@@ -72,4 +72,23 @@ export class MetaController {
       });
     }
   };
+
+  obtenerRendimientoMensual = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const rendimientos = await this.metaService.obtenerRendimientoMensual();
+
+      // Retornamos directamente el arreglo para que el frontend lo pueda mapear (datosMostrar.map)
+      res.status(200).json(rendimientos);
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Error interno del servidor";
+      res.status(500).json({
+        success: false,
+        message: errorMessage,
+      });
+    }
+  };
 }

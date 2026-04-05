@@ -21,5 +21,8 @@ export function crearMetaRouter(dbPool: Pool): Router {
     metaController.consultarRendimiento,
   );
 
+  // Endpoint: GET /api/metas/rendimiento
+  router.get("/rendimiento", metaController.obtenerRendimientoMensual);
+
   return router;
 }

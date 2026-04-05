@@ -56,4 +56,47 @@ export class MetaRepository {
     const result = await this.pool.query(query, [id_empleado, anio, mes]);
     return Number(result.rows[0].total_vendido);
   }
+
+  async obtenerRendimientoMensual(): Promise<any[]> {
+    // Esta consulta extrae el mes y año actual, busca la meta de los empleados
+    // y suma todas sus ventas del mes en curso para sacar el porcentaje.
+    const query = `
+      SELECT 
+        e.id_empleado, 
+        CONCAT(e.nombre, ' ', e.apellido) as nombre_vendedor,
+        m.monto_meta,
+        COALESCE(SUM(v.total), 0) as monto_vendido,
+        CASE 
+          WHEN m.monto_meta > 0 THEN (COALESCE(SUM(v.total), 0) / m.monto_meta) * 100 
+          ELSE 0 
+        END as porcentaje_cumplimiento
+      FROM empleado e
+      INNER JOIN meta_venta m ON e.id_empleado = m.id_empleado
+      LEFT JOIN venta v ON v.id_vendedor = e.id_empleado 
+         AND EXTRACT(MONTH FROM v.created_at) = m.mes 
+         AND EXTRACT(YEAR FROM v.created_at) = m.anio
+      WHERE m.mes = EXTRACT(MONTH FROM CURRENT_DATE) 
+        AND m.anio = EXTRACT(YEAR FROM CURRENT_DATE)
+      GROUP BY e.id_empleado, e.nombre, e.apellido, m.monto_meta;
+    `;
+
+    try {
+      // Como estás usando PostgreSQL, usa 'this.pool.query' (asumiendo tu estructura)
+      const result = await this.pool.query(query);
+
+      // PostgreSQL suele devolver los campos NUMERIC como strings,
+      // los parseamos a números para que el frontend no tenga errores de cálculo.
+      return result.rows.map((row) => ({
+        id_empleado: row.id_empleado,
+        nombre_vendedor: row.nombre_vendedor,
+        monto_meta: Number(row.monto_meta),
+        monto_vendido: Number(row.monto_vendido),
+        porcentaje_cumplimiento: Number(row.porcentaje_cumplimiento),
+      }));
+    } catch (error) {
+      throw new Error(
+        `Error al obtener rendimiento mensual: ${(error as Error).message}`,
+      );
+    }
+  }
 }

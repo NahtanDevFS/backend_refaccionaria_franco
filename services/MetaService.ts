@@ -80,4 +80,8 @@ export class MetaService {
       comision_total_ganada: Number(comisionCalculada.toFixed(2)),
     };
   }
+
+  async obtenerRendimientoMensual() {
+    return await this.metaRepository.obtenerRendimientoMensual();
+  }
 }
