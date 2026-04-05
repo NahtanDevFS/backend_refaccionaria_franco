@@ -1,6 +1,7 @@
 // index.ts
 import express from "express";
 import { Pool } from "pg";
+import cors from "cors";
 import "dotenv/config";
 import { verificarToken } from "./middlewares/auth.middleware";
 
@@ -16,6 +17,15 @@ import { crearAuthRouter } from "./routes/auth.routes";
 import { crearBodegaRouter } from "./routes/bodega.routes";
 
 const app = express();
+
+app.use(
+  cors({
+    origin: "http://localhost:3001", // Permite solo a tu frontend de Next.js
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"], // Vital si usas verificarToken
+  }),
+);
+
 app.use(express.json());
 
 // Instanciamos el Pool leyendo las variables de entorno de forma segura
