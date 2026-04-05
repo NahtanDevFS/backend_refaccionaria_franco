@@ -2,6 +2,7 @@
 import express from "express";
 import { Pool } from "pg";
 import "dotenv/config";
+import { verificarToken } from "./middlewares/auth.middleware";
 
 import { crearVentaRouter } from "./routes/venta.routes";
 import { crearCajaRouter } from "./routes/caja.routes";
@@ -11,6 +12,7 @@ import { crearPedidoRouter } from "./routes/pedido.routes";
 import { crearArqueoRouter } from "./routes/arqueo.routes";
 import { crearGarantiaRouter } from "./routes/garantia.routes";
 import { crearMetaRouter } from "./routes/meta.routes";
+import { crearAuthRouter } from "./routes/auth.routes";
 
 const app = express();
 app.use(express.json());
@@ -23,6 +25,12 @@ const dbPool = new Pool({
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
 });
+
+//ruta pública
+app.use("/api/auth", crearAuthRouter(dbPool));
+
+//se aplica el middleware a las rutas de abajo
+app.use(verificarToken);
 
 // Montamos los routers inyectando la conexión a la base de datos
 app.use("/api/ventas", crearVentaRouter(dbPool));
