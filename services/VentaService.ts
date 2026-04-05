@@ -82,4 +82,8 @@ export class VentaService {
       detallesCalculados,
     );
   }
+
+  async obtenerVentas() {
+    return await this.ventaRepository.obtenerHistorialVentas();
+  }
 }

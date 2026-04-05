@@ -49,4 +49,15 @@ export class VentaController {
       });
     }
   };
+
+  obtenerVentas = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const ventas = await this.ventaService.obtenerVentas();
+      res.status(200).json(ventas);
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Error interno";
+      res.status(500).json({ success: false, message: errorMessage });
+    }
+  };
 }

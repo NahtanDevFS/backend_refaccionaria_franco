@@ -130,4 +130,34 @@ export class VentaRepository implements IVentaRepository {
       );
     }
   }
+
+  async obtenerHistorialVentas(): Promise<any[]> {
+    const query = `
+      SELECT 
+        v.id_venta, 
+        v.created_at as fecha, 
+        COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente, 
+        v.total, 
+        v.estado 
+      FROM venta v
+      LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
+      ORDER BY v.created_at DESC
+      LIMIT 50;
+    `;
+
+    try {
+      // Corrección: usamos this.pool en lugar de this.db
+      const result = await this.pool.query(query);
+
+      // Parseamos los numéricos por seguridad (como lo haces en obtenerVentaPorId)
+      return result.rows.map((row) => ({
+        ...row,
+        total: Number(row.total),
+      }));
+    } catch (error) {
+      throw new Error(
+        `Error al obtener el historial de ventas: ${(error as Error).message}`,
+      );
+    }
+  }
 }

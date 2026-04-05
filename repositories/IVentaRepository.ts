@@ -21,4 +21,6 @@ export interface IVentaRepository {
   obtenerVentaPorId(
     id_venta: number,
   ): Promise<{ venta: Venta; detalles: DetalleVenta[] } | null>;
+
+  obtenerHistorialVentas(): Promise<any[]>;
 }
