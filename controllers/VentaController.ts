@@ -51,4 +51,22 @@ export class VentaController {
       res.status(400).json({ success: false, message: errorMessage });
     }
   };
+
+  // Añade este método a la clase VentaController
+  obtenerRepartidoresActivos = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      // Extraemos la sucursal directamente del token por seguridad
+      const idSucursal = req.usuario!.id_sucursal;
+      const repartidores =
+        await this.ventaService.obtenerRepartidores(idSucursal);
+      res.status(200).json(repartidores);
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Error interno";
+      res.status(500).json({ success: false, message: errorMessage });
+    }
+  };
 }

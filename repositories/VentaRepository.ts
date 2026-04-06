@@ -95,16 +95,18 @@ export class VentaRepository implements IVentaRepository {
         } else if (data.cliente_nuevo) {
           const insertCliente = await client.query(
             `
-            INSERT INTO cliente (nombre_razon_social, nit, tipo_cliente, telefono, direccion, id_municipio) 
-            VALUES ($1, $2, $3, $4, $5, $6) RETURNING id_cliente
+            INSERT INTO cliente (nombre_razon_social, nit, tipo_cliente, telefono, email, direccion, id_municipio, notas_internas) 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id_cliente
           `,
             [
               data.cliente_nuevo.nombre_razon_social,
               data.nit,
               data.cliente_nuevo.tipo_cliente,
               data.cliente_nuevo.telefono,
+              data.cliente_nuevo.email,
               data.cliente_nuevo.direccion,
               data.cliente_nuevo.id_municipio,
+              data.cliente_nuevo.notas_internas,
             ],
           );
           id_cliente = insertCliente.rows[0].id_cliente;
@@ -149,13 +151,25 @@ export class VentaRepository implements IVentaRepository {
         );
       }
 
-      // 4. Crear Venta (Estado: pendiente_pago)
+      //Crear Venta (Estado dinámico según el canal)
+      const estadoVenta =
+        data.canal === "domicilio"
+          ? "pendiente_cobro_contra_entrega"
+          : "pendiente_pago";
+
       const ventaRes = await client.query(
         `
         INSERT INTO venta (id_sucursal, id_vendedor, id_cliente, canal, estado, subtotal, total)
-        VALUES ($1, $2, $3, $4, 'pendiente_pago', $5, $5) RETURNING id_venta
+        VALUES ($1, $2, $3, $4, $5, $6, $6) RETURNING id_venta
       `,
-        [data.id_sucursal, data.id_vendedor, id_cliente, data.canal, subtotal],
+        [
+          data.id_sucursal,
+          data.id_vendedor,
+          id_cliente,
+          data.canal,
+          estadoVenta,
+          subtotal,
+        ],
       );
 
       const id_venta = ventaRes.rows[0].id_venta;
@@ -190,5 +204,18 @@ export class VentaRepository implements IVentaRepository {
     } finally {
       client.release();
     }
+  }
+  // Añade este método a la clase VentaRepository
+  async obtenerRepartidoresPorSucursal(id_sucursal: number): Promise<any[]> {
+    const query = `
+      SELECT e.id_empleado, e.nombre, e.apellido
+      FROM empleado e
+      INNER JOIN puesto p ON e.id_puesto = p.id_puesto
+      WHERE e.id_sucursal = $1 
+        AND p.nombre ILIKE '%repartidor%' 
+        AND e.activo = true;
+    `;
+    const result = await this.pool.query(query, [id_sucursal]);
+    return result.rows;
   }
 }

@@ -2,8 +2,10 @@ export interface ClienteNuevoDTO {
   nombre_razon_social: string;
   tipo_cliente: string;
   telefono?: string;
+  email?: string; // <-- NUEVO
   direccion?: string;
   id_municipio?: number;
+  notas_internas?: string; // <-- NUEVO
 }
 
 export interface DetalleOrdenDTO {

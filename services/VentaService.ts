@@ -17,4 +17,10 @@ export class VentaService {
     // ventas sin stock y crear clientes si no existen.
     return await this.ventaRepository.crearOrdenVenta(data);
   }
+
+  async obtenerRepartidores(id_sucursal: number) {
+    return await this.ventaRepository.obtenerRepartidoresPorSucursal(
+      id_sucursal,
+    );
+  }
 }

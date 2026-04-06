@@ -24,6 +24,10 @@ export function crearVentaRouter(dbPool: Pool): Router {
   // Usamos POST porque estamos creando un nuevo recurso (una venta)
   router.get("/", ventaController.obtenerVentas);
   router.post("/orden", ventaController.crearOrden);
+  router.get(
+    "/repartidores/activos",
+    ventaController.obtenerRepartidoresActivos,
+  );
 
   return router;
 }
