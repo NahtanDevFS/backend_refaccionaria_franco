@@ -22,5 +22,6 @@ export interface CrearVentaDTO {
   pago_contra_entrega?: boolean;
   id_repartidor?: number | null;
   direccion_entrega?: string | null;
+  descuento_porcentaje?: number;
   detalles: DetalleOrdenDTO[];
 }

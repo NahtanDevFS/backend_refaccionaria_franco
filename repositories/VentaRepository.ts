@@ -151,24 +151,35 @@ export class VentaRepository implements IVentaRepository {
         );
       }
 
-      //Crear Venta (Estado dinámico según el canal)
-      const estadoVenta =
-        data.canal === "domicilio" && data.pago_contra_entrega
-          ? "pendiente_cobro_contra_entrega"
-          : "pendiente_pago";
+      // === LÓGICA DE DESCUENTO Y ESTADOS ===
+      const pctDescuento = data.descuento_porcentaje || 0;
+      const descuentoMonto = subtotal * (pctDescuento / 100);
+      const total = subtotal - descuentoMonto;
+      const esContraEntrega = data.pago_contra_entrega || false;
 
+      let estadoVenta = "pendiente_pago";
+      if (pctDescuento > 5) {
+        estadoVenta = "pendiente_autorizacion";
+      } else if (data.canal === "domicilio" && esContraEntrega) {
+        estadoVenta = "pendiente_cobro_contra_entrega";
+      }
+
+      // 4. Crear Venta (Se añade pago_contra_entrega, descuento_monto y total correctos)
       const ventaRes = await client.query(
         `
-        INSERT INTO venta (id_sucursal, id_vendedor, id_cliente, canal, estado, subtotal, total)
-        VALUES ($1, $2, $3, $4, $5, $6, $6) RETURNING id_venta
+        INSERT INTO venta (id_sucursal, id_vendedor, id_cliente, canal, pago_contra_entrega, estado, subtotal, descuento_monto, total)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id_venta
       `,
         [
           data.id_sucursal,
           data.id_vendedor,
           id_cliente,
           data.canal,
+          esContraEntrega,
           estadoVenta,
           subtotal,
+          descuentoMonto,
+          total,
         ],
       );
 
@@ -217,5 +228,109 @@ export class VentaRepository implements IVentaRepository {
     `;
     const result = await this.pool.query(query, [id_sucursal]);
     return result.rows;
+  }
+
+  async obtenerPendientesAutorizacion(id_sucursal: number): Promise<any[]> {
+    const query = `
+      SELECT 
+        v.id_venta, 
+        v.created_at as fecha, 
+        COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente, 
+        CONCAT(e.nombre, ' ', e.apellido) as vendedor,
+        v.subtotal, 
+        v.descuento_monto, 
+        v.total,
+        ROUND((v.descuento_monto / v.subtotal) * 100, 2) as pct_descuento
+      FROM venta v
+      LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
+      INNER JOIN empleado e ON v.id_vendedor = e.id_empleado
+      WHERE v.id_sucursal = $1 AND v.estado = 'pendiente_autorizacion'
+      ORDER BY v.created_at ASC;
+    `;
+    const result = await this.pool.query(query, [id_sucursal]);
+    return result.rows.map((row) => ({
+      ...row,
+      subtotal: Number(row.subtotal),
+      descuento_monto: Number(row.descuento_monto),
+      total: Number(row.total),
+      pct_descuento: Number(row.pct_descuento),
+    }));
+  }
+
+  async resolverAutorizacion(
+    id_venta: number,
+    id_supervisor: number,
+    id_usuario_log: number,
+    aprobado: boolean,
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      // 1. Obtener datos clave de la venta
+      const ventaRes = await client.query(
+        "SELECT estado, canal, pago_contra_entrega FROM venta WHERE id_venta = $1 FOR UPDATE",
+        [id_venta],
+      );
+      if (ventaRes.rows.length === 0) throw new Error("Venta no encontrada");
+
+      const venta = ventaRes.rows[0];
+      if (venta.estado !== "pendiente_autorizacion")
+        throw new Error("La venta no está pendiente de autorización");
+
+      // 2. Determinar el nuevo estado
+      let nuevoEstado = "rechazada";
+      if (aprobado) {
+        nuevoEstado =
+          venta.canal === "domicilio" && venta.pago_contra_entrega
+            ? "pendiente_cobro_contra_entrega"
+            : "pendiente_pago";
+      }
+
+      // 3. Actualizar
+      await client.query(
+        `
+        UPDATE venta 
+        SET estado = $1, id_supervisor_autoriza = $2, updated_at = NOW() 
+        WHERE id_venta = $3
+      `,
+        [nuevoEstado, id_supervisor, id_venta],
+      );
+
+      // 4. Registro de Auditoría
+      const accion = aprobado ? "aprobacion_descuento" : "rechazo_descuento";
+      const datosNuevos = JSON.stringify({
+        estado: nuevoEstado,
+        id_supervisor_autoriza: id_supervisor,
+      });
+      await client.query(
+        `
+        INSERT INTO log_auditoria (id_usuario, tabla_afectada, accion, id_registro, datos_nuevos)
+        VALUES ($1, 'venta', $2, $3, $4)
+      `,
+        [id_usuario_log, accion, id_venta, datosNuevos],
+      );
+
+      // 5. Si se rechaza, deberíamos regresar el stock al inventario
+      if (!aprobado) {
+        await client.query(
+          `
+          UPDATE inventario_sucursal i
+          SET cantidad_actual = i.cantidad_actual + dv.cantidad
+          FROM detalle_venta dv
+          WHERE i.id_producto = dv.id_producto AND dv.id_venta = $1
+            AND i.id_sucursal = (SELECT id_sucursal FROM venta WHERE id_venta = $1)
+        `,
+          [id_venta],
+        );
+      }
+
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 }

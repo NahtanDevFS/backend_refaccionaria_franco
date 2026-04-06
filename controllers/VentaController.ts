@@ -69,4 +69,45 @@ export class VentaController {
       res.status(500).json({ success: false, message: errorMessage });
     }
   };
+
+  obtenerAutorizacionesPendientes = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const idSucursal = req.usuario!.id_sucursal; // Restringe a su propia sucursal
+      const ventas =
+        await this.ventaService.obtenerPendientesAutorizacion(idSucursal);
+      res.status(200).json(ventas);
+    } catch (error) {
+      res
+        .status(500)
+        .json({ success: false, message: (error as Error).message });
+    }
+  };
+
+  resolverAutorizacion = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { id_venta, aprobado } = req.body;
+      const idSupervisor = req.usuario!.id_empleado;
+      const idUsuarioLog = req.usuario!.id_usuario;
+
+      await this.ventaService.resolverAutorizacion(
+        id_venta,
+        idSupervisor,
+        idUsuarioLog,
+        aprobado,
+      );
+      res
+        .status(200)
+        .json({
+          success: true,
+          message: `Descuento ${aprobado ? "aprobado" : "rechazado"}`,
+        });
+    } catch (error) {
+      res
+        .status(500)
+        .json({ success: false, message: (error as Error).message });
+    }
+  };
 }

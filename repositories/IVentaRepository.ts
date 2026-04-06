@@ -9,4 +9,11 @@ export interface IVentaRepository {
   crearOrdenVenta(data: CrearVentaDTO): Promise<number>;
   // Añade esta línea dentro de tu interface IVentaRepository
   obtenerRepartidoresPorSucursal(id_sucursal: number): Promise<any[]>;
+  obtenerPendientesAutorizacion(id_sucursal: number): Promise<any[]>;
+  resolverAutorizacion(
+    id_venta: number,
+    id_supervisor: number,
+    id_usuario_log: number,
+    aprobado: boolean,
+  ): Promise<void>;
 }

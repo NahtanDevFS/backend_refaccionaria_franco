@@ -23,4 +23,24 @@ export class VentaService {
       id_sucursal,
     );
   }
+
+  async obtenerPendientesAutorizacion(id_sucursal: number) {
+    return await this.ventaRepository.obtenerPendientesAutorizacion(
+      id_sucursal,
+    );
+  }
+
+  async resolverAutorizacion(
+    id_venta: number,
+    id_supervisor: number,
+    id_usuario_log: number,
+    aprobado: boolean,
+  ) {
+    return await this.ventaRepository.resolverAutorizacion(
+      id_venta,
+      id_supervisor,
+      id_usuario_log,
+      aprobado,
+    );
+  }
 }

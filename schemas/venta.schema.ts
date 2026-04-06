@@ -25,6 +25,7 @@ export const crearVentaSchema = z.object({
     .optional(),
   canal: z.enum(["mostrador", "domicilio"]),
   pago_contra_entrega: z.boolean().optional().default(false),
+  descuento_porcentaje: z.number().min(0).max(100).optional().default(0),
   id_repartidor: z.number().nullable().optional(),
   direccion_entrega: z.string().nullable().optional(),
   detalles: z
