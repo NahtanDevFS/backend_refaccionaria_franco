@@ -2,9 +2,7 @@
 import { Pool } from "pg";
 import { IVentaRepository } from "./IVentaRepository";
 import { CrearVentaDTO } from "../dtos/CrearVentaDTO";
-import { Venta, DetalleVenta } from "../entities/Venta";
-import { EstadoVenta } from "../types/venta.types";
-import { DetalleVentaCalculado } from "../types/repository.types";
+import { Venta } from "../entities/Venta";
 
 export class VentaRepository implements IVentaRepository {
   private pool: Pool;
@@ -12,8 +10,6 @@ export class VentaRepository implements IVentaRepository {
   constructor(pool: Pool) {
     this.pool = pool;
   }
-
-  // Agregar dentro de la clase VentaRepository en repositories/VentaRepository.ts
 
   async obtenerVentaPorId(
     id_venta: number,
@@ -36,8 +32,7 @@ export class VentaRepository implements IVentaRepository {
       venta.descuento_monto = Number(venta.descuento_monto);
       venta.total = Number(venta.total);
 
-      // Para el caso de uso del pago, no es estrictamente necesario traer los detalles,
-      // pero devolvemos el arreglo vacío para cumplir con la firma de la interfaz por ahora.
+      // Para el caso de uso del pago, devolvemos el arreglo vacío para cumplir con la firma de la interfaz
       return { venta, detalles: [] };
     } catch (error) {
       throw new Error(
@@ -61,10 +56,9 @@ export class VentaRepository implements IVentaRepository {
     `;
 
     try {
-      // Corrección: usamos this.pool en lugar de this.db
       const result = await this.pool.query(query);
 
-      // Parseamos los numéricos por seguridad (como lo haces en obtenerVentaPorId)
+      // Parseamos los numéricos por seguridad
       return result.rows.map((row) => ({
         ...row,
         total: Number(row.total),
@@ -164,7 +158,7 @@ export class VentaRepository implements IVentaRepository {
         estadoVenta = "pendiente_cobro_contra_entrega";
       }
 
-      // 4. Crear Venta (Se añade pago_contra_entrega, descuento_monto y total correctos)
+      // 4. Crear Venta
       const ventaRes = await client.query(
         `
         INSERT INTO venta (id_sucursal, id_vendedor, id_cliente, canal, pago_contra_entrega, estado, subtotal, descuento_monto, total)
@@ -200,10 +194,16 @@ export class VentaRepository implements IVentaRepository {
       if (data.canal === "domicilio" && data.direccion_entrega) {
         await client.query(
           `
-          INSERT INTO pedido_domicilio (id_venta, id_repartidor, direccion_entrega, estado)
-          VALUES ($1, $2, $3, 'pendiente')
+          INSERT INTO pedido_domicilio (id_venta, id_repartidor, direccion_entrega, estado, nombre_contacto, telefono_contacto)
+          VALUES ($1, $2, $3, 'pendiente', $4, $5)
         `,
-          [id_venta, data.id_repartidor, data.direccion_entrega],
+          [
+            id_venta,
+            data.id_repartidor,
+            data.direccion_entrega,
+            data.nombre_contacto,
+            data.telefono_contacto,
+          ],
         );
       }
 
@@ -216,7 +216,7 @@ export class VentaRepository implements IVentaRepository {
       client.release();
     }
   }
-  // Añade este método a la clase VentaRepository
+
   async obtenerRepartidoresPorSucursal(id_sucursal: number): Promise<any[]> {
     const query = `
       SELECT e.id_empleado, e.nombre, e.apellido
@@ -311,7 +311,7 @@ export class VentaRepository implements IVentaRepository {
         [id_usuario_log, accion, id_venta, datosNuevos],
       );
 
-      // 5. Si se rechaza, deberíamos regresar el stock al inventario
+      // 5. Si se rechaza, regresar el stock al inventario
       if (!aprobado) {
         await client.query(
           `
