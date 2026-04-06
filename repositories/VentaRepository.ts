@@ -153,7 +153,7 @@ export class VentaRepository implements IVentaRepository {
 
       //Crear Venta (Estado dinámico según el canal)
       const estadoVenta =
-        data.canal === "domicilio"
+        data.canal === "domicilio" && data.pago_contra_entrega
           ? "pendiente_cobro_contra_entrega"
           : "pendiente_pago";
 

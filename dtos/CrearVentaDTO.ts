@@ -2,10 +2,10 @@ export interface ClienteNuevoDTO {
   nombre_razon_social: string;
   tipo_cliente: string;
   telefono?: string;
-  email?: string; // <-- NUEVO
+  email?: string;
   direccion?: string;
   id_municipio?: number;
-  notas_internas?: string; // <-- NUEVO
+  notas_internas?: string;
 }
 
 export interface DetalleOrdenDTO {
@@ -19,6 +19,7 @@ export interface CrearVentaDTO {
   nit: string;
   cliente_nuevo?: ClienteNuevoDTO | null;
   canal: "mostrador" | "domicilio";
+  pago_contra_entrega?: boolean;
   id_repartidor?: number | null;
   direccion_entrega?: string | null;
   detalles: DetalleOrdenDTO[];
