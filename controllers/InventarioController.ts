@@ -10,13 +10,11 @@ export class InventarioController {
       const { query } = req.query;
 
       if (!query || typeof query !== "string") {
-        res
-          .status(400)
-          .json({
-            success: false,
-            message:
-              "Debe proporcionar un parámetro de búsqueda válido (?query=termino)",
-          });
+        res.status(400).json({
+          success: false,
+          message:
+            "Debe proporcionar un parámetro de búsqueda válido (?query=termino)",
+        });
         return;
       }
 
@@ -35,6 +33,34 @@ export class InventarioController {
             ? error.message
             : "Error interno al buscar inventario",
       });
+    }
+  };
+
+  buscarMultiSucursal = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const termino = req.query.q as string;
+      const idSucursal = parseInt(req.query.sucursal as string);
+
+      if (!termino || isNaN(idSucursal)) {
+        res
+          .status(400)
+          .json({
+            success: false,
+            message: "Parámetros 'q' y 'sucursal' son obligatorios",
+          });
+        return;
+      }
+
+      const resultados =
+        await this.inventarioService.buscarProductoMultiSucursal(
+          termino,
+          idSucursal,
+        );
+      res.status(200).json(resultados);
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Error interno";
+      res.status(500).json({ success: false, message: errorMessage });
     }
   };
 }

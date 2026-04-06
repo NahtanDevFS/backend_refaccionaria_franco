@@ -38,4 +38,38 @@ export class InventarioRepository {
       );
     }
   }
+
+  async buscarProductoMultiSucursal(
+    termino: string,
+    idSucursalLocal: number,
+  ): Promise<any[]> {
+    const query = `
+      SELECT 
+        p.id_producto, 
+        p.sku, 
+        p.nombre, 
+        p.precio_venta,
+        COALESCE(MAX(CASE WHEN i.id_sucursal = $2 THEN i.cantidad_actual END), 0) as stock_local,
+        COALESCE(
+          json_agg(
+            json_build_object('sucursal', s.nombre, 'cantidad', i.cantidad_actual)
+          ) FILTER (WHERE i.id_sucursal != $2 AND i.cantidad_actual > 0), '[]'
+        ) as stock_otras_sucursales
+      FROM producto p
+      LEFT JOIN inventario_sucursal i ON p.id_producto = i.id_producto
+      LEFT JOIN sucursal s ON i.id_sucursal = s.id_sucursal
+      WHERE p.activo = true AND (p.nombre ILIKE $1 OR p.sku ILIKE $1)
+      GROUP BY p.id_producto;
+    `;
+
+    const result = await this.pool.query(query, [
+      `%${termino}%`,
+      idSucursalLocal,
+    ]);
+    return result.rows.map((row) => ({
+      ...row,
+      precio_venta: Number(row.precio_venta),
+      stock_local: Number(row.stock_local),
+    }));
+  }
 }

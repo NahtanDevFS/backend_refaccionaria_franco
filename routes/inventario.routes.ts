@@ -14,6 +14,7 @@ export function crearInventarioRouter(dbPool: Pool): Router {
 
   // Endpoint: GET /api/inventario/stock?query=FRIC
   router.get("/stock", inventarioController.consultarStock);
+  router.get("/buscar", inventarioController.buscarMultiSucursal);
 
   return router;
 }

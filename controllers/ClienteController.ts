@@ -69,4 +69,33 @@ export class ClienteController {
       });
     }
   };
+
+  buscarPorNit = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const nit = req.query.nit as string;
+      if (!nit) {
+        res
+          .status(400)
+          .json({
+            success: false,
+            message: "El parámetro 'nit' es obligatorio",
+          });
+        return;
+      }
+
+      const cliente = await this.clienteService.buscarPorNit(nit);
+      if (!cliente) {
+        res
+          .status(404)
+          .json({ success: false, message: "Cliente no encontrado" });
+        return;
+      }
+
+      res.status(200).json(cliente);
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Error interno";
+      res.status(500).json({ success: false, message: errorMessage });
+    }
+  };
 }

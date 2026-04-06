@@ -14,7 +14,8 @@ export function crearClienteRouter(dbPool: Pool): Router {
 
   // Endpoints
   router.post("/", clienteController.crearCliente);
-  router.get("/buscar", clienteController.buscarClientes);
+  //router.get("/buscar", clienteController.buscarClientes);
+  router.get("/buscar", clienteController.buscarPorNit);
 
   return router;
 }

@@ -35,4 +35,8 @@ export class ClienteService {
     );
     return clientes;
   }
+
+  async buscarPorNit(nit: string) {
+    return await this.clienteRepository.buscarPorNit(nit);
+  }
 }

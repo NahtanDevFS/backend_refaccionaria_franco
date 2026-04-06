@@ -55,4 +55,10 @@ export class ClienteRepository {
       throw new Error(`Error al buscar clientes: ${(error as Error).message}`);
     }
   }
+
+  async buscarPorNit(nit: string): Promise<any | null> {
+    const query = `SELECT * FROM cliente WHERE nit = $1`;
+    const result = await this.pool.query(query, [nit]);
+    return result.rows.length ? result.rows[0] : null;
+  }
 }

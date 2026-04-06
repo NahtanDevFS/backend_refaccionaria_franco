@@ -24,4 +24,11 @@ export class InventarioService {
 
     return { mensaje: "Stock consultado exitosamente", data: resultados };
   }
+
+  async buscarProductoMultiSucursal(termino: string, idSucursalLocal: number) {
+    return await this.inventarioRepository.buscarProductoMultiSucursal(
+      termino,
+      idSucursalLocal,
+    );
+  }
 }

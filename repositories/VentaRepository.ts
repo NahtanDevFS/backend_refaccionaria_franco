@@ -13,91 +13,6 @@ export class VentaRepository implements IVentaRepository {
     this.pool = pool;
   }
 
-  async crearVentaConDetalles(
-    ventaData: CrearVentaDTO,
-    totalCalculado: number,
-    subtotalCalculado: number,
-    detallesCalculados: DetalleVentaCalculado[],
-  ): Promise<Venta> {
-    // Solicitamos un cliente dedicado del pool para aislar la transacción
-    const client = await this.pool.connect();
-
-    try {
-      // 1. Iniciamos la transacción ACID
-      await client.query("BEGIN");
-
-      const descuentoMonto = subtotalCalculado - totalCalculado;
-
-      // 2. Insertamos la cabecera de la venta (siempre usando consultas parametrizadas)
-      const insertVentaQuery = `
-        INSERT INTO venta (
-          id_sucursal, 
-          id_vendedor, 
-          id_cliente, 
-          canal, 
-          estado, 
-          subtotal, 
-          descuento_monto, 
-          total,
-          created_at,
-          updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
-        RETURNING *;
-      `;
-
-      const ventaValues = [
-        ventaData.id_sucursal,
-        ventaData.id_vendedor,
-        ventaData.id_cliente || null, // null si es consumidor final
-        ventaData.canal,
-        EstadoVenta.PENDIENTE_PAGO, // Estado inicial estricto
-        subtotalCalculado,
-        descuentoMonto,
-        totalCalculado,
-      ];
-
-      const resultVenta = await client.query(insertVentaQuery, ventaValues);
-      const nuevaVenta: Venta = resultVenta.rows[0];
-
-      // 3. Insertamos los detalles de la venta
-      const insertDetalleQuery = `
-        INSERT INTO detalle_venta (
-          id_venta, 
-          id_producto, 
-          cantidad, 
-          precio_unitario, 
-          subtotal_linea
-        ) VALUES ($1, $2, $3, $4, $5);
-      `;
-
-      for (const detalle of detallesCalculados) {
-        const detalleValues = [
-          nuevaVenta.id_venta,
-          detalle.id_producto,
-          detalle.cantidad,
-          detalle.precio_unitario,
-          detalle.subtotal_linea,
-        ];
-
-        await client.query(insertDetalleQuery, detalleValues);
-      }
-
-      // 4. Si todo salió perfecto, confirmamos los cambios en la BD
-      await client.query("COMMIT");
-
-      return nuevaVenta;
-    } catch (error) {
-      // Si algo falla (ej. error de constraint, red, etc.), revertimos TODO
-      await client.query("ROLLBACK");
-
-      // Relanzamos el error para que el Controller lo atrape y envíe el HTTP 500/400
-      throw new Error(`Error al crear la venta: ${(error as Error).message}`);
-    } finally {
-      // CRÍTICO: Siempre liberar el cliente para no agotar el pool de conexiones
-      client.release();
-    }
-  }
-
   // Agregar dentro de la clase VentaRepository en repositories/VentaRepository.ts
 
   async obtenerVentaPorId(
@@ -158,6 +73,122 @@ export class VentaRepository implements IVentaRepository {
       throw new Error(
         `Error al obtener el historial de ventas: ${(error as Error).message}`,
       );
+    }
+  }
+
+  async crearOrdenVenta(data: CrearVentaDTO): Promise<number> {
+    const client = await this.pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      let id_cliente = null;
+
+      // 1. Validar / Crear Cliente
+      if (data.nit !== "CF") {
+        const clienteRes = await client.query(
+          "SELECT id_cliente FROM cliente WHERE nit = $1",
+          [data.nit],
+        );
+        if (clienteRes.rows.length > 0) {
+          id_cliente = clienteRes.rows[0].id_cliente;
+        } else if (data.cliente_nuevo) {
+          const insertCliente = await client.query(
+            `
+            INSERT INTO cliente (nombre_razon_social, nit, tipo_cliente, telefono, direccion, id_municipio) 
+            VALUES ($1, $2, $3, $4, $5, $6) RETURNING id_cliente
+          `,
+            [
+              data.cliente_nuevo.nombre_razon_social,
+              data.nit,
+              data.cliente_nuevo.tipo_cliente,
+              data.cliente_nuevo.telefono,
+              data.cliente_nuevo.direccion,
+              data.cliente_nuevo.id_municipio,
+            ],
+          );
+          id_cliente = insertCliente.rows[0].id_cliente;
+        } else {
+          throw new Error(
+            "Cliente no encontrado y no se enviaron datos para crearlo.",
+          );
+        }
+      }
+
+      // 2. Calcular totales y validar stock
+      let subtotal = 0;
+      for (const det of data.detalles) {
+        const prodRes = await client.query(
+          `
+          SELECT p.precio_venta, i.cantidad_actual 
+          FROM producto p 
+          JOIN inventario_sucursal i ON p.id_producto = i.id_producto 
+          WHERE p.id_producto = $1 AND i.id_sucursal = $2 FOR UPDATE
+        `,
+          [det.id_producto, data.id_sucursal],
+        );
+
+        if (
+          prodRes.rows.length === 0 ||
+          prodRes.rows[0].cantidad_actual < det.cantidad
+        ) {
+          throw new Error(
+            `Stock insuficiente para el producto ID ${det.id_producto}`,
+          );
+        }
+
+        subtotal += Number(prodRes.rows[0].precio_venta) * det.cantidad;
+
+        // 3. Descontar Inventario
+        await client.query(
+          `
+          UPDATE inventario_sucursal SET cantidad_actual = cantidad_actual - $1 
+          WHERE id_producto = $2 AND id_sucursal = $3
+        `,
+          [det.cantidad, det.id_producto, data.id_sucursal],
+        );
+      }
+
+      // 4. Crear Venta (Estado: pendiente_pago)
+      const ventaRes = await client.query(
+        `
+        INSERT INTO venta (id_sucursal, id_vendedor, id_cliente, canal, estado, subtotal, total)
+        VALUES ($1, $2, $3, $4, 'pendiente_pago', $5, $5) RETURNING id_venta
+      `,
+        [data.id_sucursal, data.id_vendedor, id_cliente, data.canal, subtotal],
+      );
+
+      const id_venta = ventaRes.rows[0].id_venta;
+
+      // 5. Insertar Detalles
+      for (const det of data.detalles) {
+        await client.query(
+          `
+          INSERT INTO detalle_venta (id_venta, id_producto, cantidad, precio_unitario, subtotal_linea)
+          SELECT $1, $2, $3, precio_venta, (precio_venta * $3) FROM producto WHERE id_producto = $2
+        `,
+          [id_venta, det.id_producto, det.cantidad],
+        );
+      }
+
+      // 6. Logística
+      if (data.canal === "domicilio" && data.direccion_entrega) {
+        await client.query(
+          `
+          INSERT INTO pedido_domicilio (id_venta, id_repartidor, direccion_entrega, estado)
+          VALUES ($1, $2, $3, 'pendiente')
+        `,
+          [id_venta, data.id_repartidor, data.direccion_entrega],
+        );
+      }
+
+      await client.query("COMMIT");
+      return id_venta;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
     }
   }
 }

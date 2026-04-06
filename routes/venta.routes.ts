@@ -23,7 +23,7 @@ export function crearVentaRouter(dbPool: Pool): Router {
   // 4. Definimos la ruta RESTful
   // Usamos POST porque estamos creando un nuevo recurso (una venta)
   router.get("/", ventaController.obtenerVentas);
-  router.post("/mostrador", ventaController.registrarVentaMostrador);
+  router.post("/orden", ventaController.crearOrden);
 
   return router;
 }
