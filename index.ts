@@ -16,6 +16,7 @@ import { crearMetaRouter } from "./routes/meta.routes";
 import { crearAuthRouter } from "./routes/auth.routes";
 import { crearBodegaRouter } from "./routes/bodega.routes";
 import { crearUbicacionRouter } from "./routes/ubicacion.routes";
+import { crearEntregaRouter } from "./routes/entrega.routes";
 
 const app = express();
 
@@ -55,6 +56,7 @@ app.use("/api/garantias", crearGarantiaRouter(dbPool));
 app.use("/api/metas", crearMetaRouter(dbPool));
 app.use("/api/bodega", crearBodegaRouter(dbPool));
 app.use("/api/ubicaciones", crearUbicacionRouter(dbPool));
+app.use("/api/entregas", crearEntregaRouter(dbPool));
 
 const PORT = process.env.PORT || 3000;
 
