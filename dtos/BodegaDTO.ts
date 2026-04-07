@@ -1,9 +1,17 @@
 // dtos/BodegaDTO.ts
-import { TipoMovimientoBodega } from "../types/bodega.types";
-
-export interface MovimientoBodegaDTO {
+export interface DetalleDespachoDTO {
   id_producto: number;
-  tipo_movimiento: TipoMovimientoBodega;
-  cantidad: number; // Siempre positivo en el JSON, la lógica decidirá si suma o resta
+  cantidad: number;
+}
+
+export interface EmitirDespachoDTO {
+  id_sucursal_destino: number;
+  detalles: DetalleDespachoDTO[];
+}
+
+export interface AjusteInventarioDTO {
+  id_producto: number;
+  tipo: "ajuste_positivo" | "ajuste_negativo";
+  cantidad: number;
   motivo: string;
 }

@@ -1,109 +1,272 @@
 // repositories/BodegaRepository.ts
 import { Pool } from "pg";
-import { TipoMovimientoBodega } from "../types/bodega.types";
+import { IBodegaRepository } from "./IBodegaRepository";
+import { EmitirDespachoDTO, AjusteInventarioDTO } from "../dtos/BodegaDTO";
 
-export class BodegaRepository {
-  constructor(private readonly pool: Pool) {}
+export class BodegaRepository implements IBodegaRepository {
+  private pool: Pool;
 
-  async ejecutarMovimiento(
-    id_sucursal: number,
+  constructor(pool: Pool) {
+    this.pool = pool;
+  }
+
+  async obtenerInventarioConAlertas(id_sucursal: number): Promise<any[]> {
+    const query = `
+      SELECT 
+        i.id_inventario, i.id_producto, p.sku, p.nombre, i.cantidad_actual, i.punto_reorden,
+        (i.cantidad_actual <= i.punto_reorden) as requiere_reorden,
+        (
+          SELECT COALESCE(SUM(i2.cantidad_actual), 0)
+          FROM inventario_sucursal i2
+          WHERE i2.id_producto = p.id_producto AND i2.id_sucursal != $1
+        ) as stock_otras_sucursales
+      FROM inventario_sucursal i
+      JOIN producto p ON i.id_producto = p.id_producto
+      WHERE i.id_sucursal = $1
+      ORDER BY requiere_reorden DESC, p.nombre ASC;
+    `;
+    const result = await this.pool.query(query, [id_sucursal]);
+    return result.rows.map((row) => ({
+      ...row,
+      cantidad_actual: Number(row.cantidad_actual),
+      punto_reorden: Number(row.punto_reorden),
+      stock_otras_sucursales: Number(row.stock_otras_sucursales),
+    }));
+  }
+
+  async emitirDespacho(
+    id_sucursal_origen: number,
     id_usuario: number,
-    id_producto: number,
-    tipo: TipoMovimientoBodega,
-    cantidad: number,
-    motivo: string,
-  ): Promise<any> {
+    data: EmitirDespachoDTO,
+  ): Promise<number> {
     const client = await this.pool.connect();
-
     try {
       await client.query("BEGIN");
 
-      // 1. Buscar si el producto ya existe en la sucursal y bloquear la fila para concurrencia
-      const checkQuery = `
-        SELECT id_inventario, cantidad_actual 
-        FROM inventario_sucursal 
-        WHERE id_producto = $1 AND id_sucursal = $2 
-        FOR UPDATE;
-      `;
-      const checkResult = await client.query(checkQuery, [
-        id_producto,
-        id_sucursal,
-      ]);
-      let inv = checkResult.rows[0];
+      // 1. Crear Nota de Despacho
+      const resNota = await client.query(
+        `
+        INSERT INTO nota_despacho (id_sucursal_origen, id_sucursal_destino, id_usuario_emite, estado)
+        VALUES ($1, $2, $3, 'en_ruta') RETURNING id_despacho
+      `,
+        [id_sucursal_origen, data.id_sucursal_destino, id_usuario],
+      );
+      const id_despacho = resNota.rows[0].id_despacho;
 
-      let nuevaCantidad = 0;
-      let idInventario = 0;
+      // 2. Procesar detalles
+      for (const det of data.detalles) {
+        // Validar stock local
+        const invRes = await client.query(
+          `
+          SELECT id_inventario, cantidad_actual FROM inventario_sucursal 
+          WHERE id_producto = $1 AND id_sucursal = $2 FOR UPDATE
+        `,
+          [det.id_producto, id_sucursal_origen],
+        );
 
-      const esResta = tipo === TipoMovimientoBodega.AJUSTE_NEGATIVO;
-      const variacion = esResta ? -cantidad : cantidad;
-
-      if (inv) {
-        // El producto ya existe en la sucursal, actualizamos
-        nuevaCantidad = Number(inv.cantidad_actual) + variacion;
-
-        if (nuevaCantidad < 0) {
+        if (
+          invRes.rows.length === 0 ||
+          Number(invRes.rows[0].cantidad_actual) < det.cantidad
+        ) {
           throw new Error(
-            `Stock insuficiente. No puede restar ${cantidad}, el stock actual es ${inv.cantidad_actual}`,
+            `Stock insuficiente para el producto ID: ${det.id_producto}`,
           );
         }
 
-        const updateQuery = `
-          UPDATE inventario_sucursal 
-          SET cantidad_actual = $1 
-          WHERE id_inventario = $2 
-          RETURNING id_inventario;
-        `;
-        await client.query(updateQuery, [nuevaCantidad, inv.id_inventario]);
-        idInventario = inv.id_inventario;
-      } else {
-        // El producto es nuevo en esta sucursal (ej. primera vez que llega)
-        if (esResta) {
-          throw new Error(
-            "No se puede hacer un ajuste negativo de un producto que no existe en la sucursal.",
-          );
-        }
+        const id_inventario = invRes.rows[0].id_inventario;
+        const nueva_cantidad =
+          Number(invRes.rows[0].cantidad_actual) - det.cantidad;
 
-        nuevaCantidad = cantidad;
-        const insertQuery = `
-          INSERT INTO inventario_sucursal (id_producto, id_sucursal, cantidad_actual, punto_reorden)
-          VALUES ($1, $2, $3, 5)
-          RETURNING id_inventario;
-        `;
-        const insertResult = await client.query(insertQuery, [
-          id_producto,
-          id_sucursal,
-          nuevaCantidad,
-        ]);
-        idInventario = insertResult.rows[0].id_inventario;
+        // Descontar inventario local
+        await client.query(
+          `UPDATE inventario_sucursal SET cantidad_actual = $1 WHERE id_inventario = $2`,
+          [nueva_cantidad, id_inventario],
+        );
+
+        // Registrar detalle del despacho
+        await client.query(
+          `
+          INSERT INTO detalle_despacho (id_despacho, id_producto, cantidad) VALUES ($1, $2, $3)
+        `,
+          [id_despacho, det.id_producto, det.cantidad],
+        );
+
+        // Auditoría de salida
+        await client.query(
+          `
+          INSERT INTO movimiento_inventario (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante, id_referencia, tabla_referencia, motivo)
+          VALUES ($1, $2, 'salida_traslado', $3, $4, $5, 'nota_despacho', 'Envío de mercadería a otra sucursal')
+        `,
+          [
+            id_inventario,
+            id_usuario,
+            det.cantidad,
+            nueva_cantidad,
+            id_despacho,
+          ],
+        );
       }
 
-      // 2. Registrar la trazabilidad en la bitácora
-      const logQuery = `
-        INSERT INTO movimiento_inventario 
-        (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante, motivo)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING *;
-      `;
-      const logResult = await client.query(logQuery, [
-        idInventario,
-        id_usuario,
-        tipo,
-        cantidad,
-        nuevaCantidad,
-        motivo,
-      ]);
-
       await client.query("COMMIT");
-      return {
-        id_inventario: idInventario,
-        stock_actualizado: nuevaCantidad,
-        movimiento: logResult.rows[0],
-      };
+      return id_despacho;
     } catch (error) {
       await client.query("ROLLBACK");
-      throw new Error(
-        `Error en transacción de bodega: ${(error as Error).message}`,
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async obtenerRecepcionesPendientes(
+    id_sucursal_destino: number,
+  ): Promise<any[]> {
+    const query = `
+      SELECT 
+        nd.id_despacho, nd.fecha_emision, s.nombre as origen,
+        (
+          SELECT json_agg(json_build_object('producto', p.nombre, 'sku', p.sku, 'cantidad', dd.cantidad))
+          FROM detalle_despacho dd
+          JOIN producto p ON dd.id_producto = p.id_producto
+          WHERE dd.id_despacho = nd.id_despacho
+        ) as productos
+      FROM nota_despacho nd
+      JOIN sucursal s ON nd.id_sucursal_origen = s.id_sucursal
+      WHERE nd.id_sucursal_destino = $1 AND nd.estado = 'en_ruta'
+      ORDER BY nd.fecha_emision ASC;
+    `;
+    const res = await this.pool.query(query, [id_sucursal_destino]);
+    return res.rows;
+  }
+
+  async recibirDespacho(
+    id_despacho: number,
+    id_sucursal_destino: number,
+    id_usuario: number,
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      const notaRes = await client.query(
+        `SELECT estado FROM nota_despacho WHERE id_despacho = $1 AND id_sucursal_destino = $2 FOR UPDATE`,
+        [id_despacho, id_sucursal_destino],
       );
+      if (notaRes.rows.length === 0)
+        throw new Error(
+          "Nota de despacho no encontrada o no pertenece a esta sucursal",
+        );
+      if (notaRes.rows[0].estado !== "en_ruta")
+        throw new Error("El despacho ya fue procesado");
+
+      // Actualizar estado de la nota
+      await client.query(
+        `UPDATE nota_despacho SET estado = 'recibido', fecha_recepcion = NOW() WHERE id_despacho = $1`,
+        [id_despacho],
+      );
+
+      // Sumar inventarios
+      const detallesRes = await client.query(
+        `SELECT id_producto, cantidad FROM detalle_despacho WHERE id_despacho = $1`,
+        [id_despacho],
+      );
+
+      for (const det of detallesRes.rows) {
+        const cantidadRecibida = Number(det.cantidad);
+
+        // Intentar actualizar o insertar el producto en el inventario destino
+        const invRes = await client.query(
+          `
+          INSERT INTO inventario_sucursal (id_producto, id_sucursal, cantidad_actual)
+          VALUES ($1, $2, $3)
+          ON CONFLICT (id_producto, id_sucursal) 
+          DO UPDATE SET cantidad_actual = inventario_sucursal.cantidad_actual + EXCLUDED.cantidad_actual
+          RETURNING id_inventario, cantidad_actual
+        `,
+          [det.id_producto, id_sucursal_destino, cantidadRecibida],
+        );
+
+        const id_inventario = invRes.rows[0].id_inventario;
+        const nueva_cantidad = Number(invRes.rows[0].cantidad_actual);
+
+        // Auditoría de entrada
+        await client.query(
+          `
+          INSERT INTO movimiento_inventario (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante, id_referencia, tabla_referencia, motivo)
+          VALUES ($1, $2, 'entrada_traslado', $3, $4, $5, 'nota_despacho', 'Recepción de mercadería desde otra sucursal')
+        `,
+          [
+            id_inventario,
+            id_usuario,
+            cantidadRecibida,
+            nueva_cantidad,
+            id_despacho,
+          ],
+        );
+      }
+
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async registrarAjuste(
+    id_sucursal: number,
+    id_usuario: number,
+    data: AjusteInventarioDTO,
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      const invRes = await client.query(
+        `SELECT id_inventario, cantidad_actual FROM inventario_sucursal WHERE id_producto = $1 AND id_sucursal = $2 FOR UPDATE`,
+        [data.id_producto, id_sucursal],
+      );
+      if (invRes.rows.length === 0)
+        throw new Error("Producto no registrado en esta sucursal");
+
+      const id_inventario = invRes.rows[0].id_inventario;
+      let cantidad_actual = Number(invRes.rows[0].cantidad_actual);
+
+      let nueva_cantidad = cantidad_actual;
+      if (data.tipo === "ajuste_positivo") nueva_cantidad += data.cantidad;
+      else if (data.tipo === "ajuste_negativo") nueva_cantidad -= data.cantidad;
+
+      if (nueva_cantidad < 0)
+        throw new Error(
+          "El ajuste negativo dejaría el stock en números rojos.",
+        );
+
+      // Actualizar stock
+      await client.query(
+        `UPDATE inventario_sucursal SET cantidad_actual = $1 WHERE id_inventario = $2`,
+        [nueva_cantidad, id_inventario],
+      );
+
+      // Guardar registro
+      await client.query(
+        `
+        INSERT INTO movimiento_inventario (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante, motivo)
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `,
+        [
+          id_inventario,
+          id_usuario,
+          data.tipo,
+          data.cantidad,
+          nueva_cantidad,
+          data.motivo,
+        ],
+      );
+
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
     } finally {
       client.release();
     }
