@@ -19,7 +19,13 @@ export class BodegaRepository implements IBodegaRepository {
           SELECT COALESCE(SUM(i2.cantidad_actual), 0)
           FROM inventario_sucursal i2
           WHERE i2.id_producto = p.id_producto AND i2.id_sucursal != $1
-        ) as stock_otras_sucursales
+        ) as stock_otras_sucursales,
+        (
+          SELECT COALESCE(json_agg(json_build_object('sucursal', s.nombre, 'cantidad', i2.cantidad_actual)), '[]'::json)
+          FROM inventario_sucursal i2
+          JOIN sucursal s ON i2.id_sucursal = s.id_sucursal
+          WHERE i2.id_producto = p.id_producto AND i2.id_sucursal != $1 AND i2.cantidad_actual > 0
+        ) as detalle_otras_sucursales
       FROM inventario_sucursal i
       JOIN producto p ON i.id_producto = p.id_producto
       WHERE i.id_sucursal = $1
@@ -31,6 +37,7 @@ export class BodegaRepository implements IBodegaRepository {
       cantidad_actual: Number(row.cantidad_actual),
       punto_reorden: Number(row.punto_reorden),
       stock_otras_sucursales: Number(row.stock_otras_sucursales),
+      // detalle_otras_sucursales ya viene como arreglo de objetos gracias a json_agg
     }));
   }
 
