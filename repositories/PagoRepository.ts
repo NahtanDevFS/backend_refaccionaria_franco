@@ -2,7 +2,7 @@
 
 import { Pool } from "pg";
 import { IPagoRepository } from "./IPagoRepository";
-import { EstadoVenta } from "../types/venta.types";
+import { RegistrarPagoDTO } from "../dtos/RegistrarPagoDTO";
 
 export class PagoRepository implements IPagoRepository {
   private pool: Pool;
@@ -11,63 +11,81 @@ export class PagoRepository implements IPagoRepository {
     this.pool = pool;
   }
 
-  async registrarPagoYFactura(
-    id_venta: number,
+  async obtenerPendientesDePago(id_sucursal: number): Promise<any[]> {
+    const query = `
+      SELECT 
+        v.id_venta, 
+        v.estado, 
+        v.total, 
+        v.pago_contra_entrega,
+        v.created_at,
+        COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente
+      FROM venta v
+      LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
+      WHERE v.id_sucursal = $1 
+        AND v.estado IN ('pendiente_pago', 'pendiente_cobro_contra_entrega')
+      ORDER BY v.created_at ASC;
+    `;
+    const result = await this.pool.query(query, [id_sucursal]);
+    return result.rows.map((row) => ({
+      ...row,
+      total: Number(row.total),
+    }));
+  }
+
+  async registrarPago(
     id_cajero: number,
-    metodo_pago: string,
-    monto: number,
-    referencia: string | null,
-    uuid_factura: string,
+    data: RegistrarPagoDTO,
   ): Promise<void> {
     const client = await this.pool.connect();
-
     try {
       await client.query("BEGIN");
 
-      // 1. Insertamos el registro del pago
-      const insertPagoQuery = `
-        INSERT INTO pago (id_venta, id_cajero, metodo_pago, monto, referencia, uuid_factura, fecha_pago)
-        VALUES ($1, $2, $3, $4, $5, $6, NOW());
-      `;
-      const pagoValues = [
-        id_venta,
-        id_cajero,
-        metodo_pago,
-        monto,
-        referencia,
-        uuid_factura,
-      ];
-      await client.query(insertPagoQuery, pagoValues);
+      // 1. Validar la venta
+      const ventaRes = await client.query(
+        "SELECT estado, total FROM venta WHERE id_venta = $1 FOR UPDATE",
+        [data.id_venta],
+      );
 
-      // 2. Actualizamos el estado de la venta a PAGADA
-      const updateVentaQuery = `
-        UPDATE venta 
-        SET estado = $1, updated_at = NOW()
-        WHERE id_venta = $2;
-      `;
-      const ventaValues = [EstadoVenta.PAGADA, id_venta];
-      await client.query(updateVentaQuery, ventaValues);
+      if (ventaRes.rows.length === 0) throw new Error("Venta no encontrada");
 
-      // 3. Disparar salida de inventario (CU-08)
-      // Como regla de negocio estricta, la salida de inventario ocurre aquí tras el pago exitoso.
-      // Hacemos un UPDATE al stock basándonos en los detalles de la venta.
-      const updateStockQuery = `
-        UPDATE inventario_sucursal iv
-        SET cantidad_actual = iv.cantidad_actual - dv.cantidad
-        FROM detalle_venta dv, venta v
-        WHERE dv.id_venta = v.id_venta
-          AND dv.id_producto = iv.id_producto
-          AND v.id_sucursal = iv.id_sucursal
-          AND v.id_venta = $1;
-      `;
-      await client.query(updateStockQuery, [id_venta]);
+      const venta = ventaRes.rows[0];
+      if (venta.estado === "pagada")
+        throw new Error("Esta orden ya fue pagada.");
+
+      if (data.monto < Number(venta.total)) {
+        throw new Error(
+          `El monto a pagar (Q${data.monto}) es menor al total de la orden (Q${venta.total}).`,
+        );
+      }
+
+      // 2. Registrar el pago
+      await client.query(
+        `
+        INSERT INTO pago (id_venta, id_cajero, metodo_pago, monto, referencia)
+        VALUES ($1, $2, $3, $4, $5)
+      `,
+        [
+          data.id_venta,
+          id_cajero,
+          data.metodo_pago,
+          data.monto,
+          data.referencia,
+        ],
+      );
+
+      // 3. Actualizar estado de la venta
+      await client.query(
+        `
+        UPDATE venta SET estado = 'pagada', updated_at = NOW() WHERE id_venta = $1
+      `,
+        [data.id_venta],
+      );
 
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
-      throw new Error(
-        `Error transaccional al procesar el pago: ${(error as Error).message}`,
-      );
+      throw error;
     } finally {
       client.release();
     }
