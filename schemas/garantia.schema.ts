@@ -1,16 +1,21 @@
 // schemas/garantia.schema.ts
 import { z } from "zod";
-import { EstadoGarantia } from "../types/garantia.types";
 
-export const solicitarGarantiaSchema = z.object({
-  id_detalle_venta: z.number().int().positive(),
+export const crearGarantiaSchema = z.object({
+  id_detalle_venta: z
+    .number()
+    .int()
+    .positive("El ID del detalle de venta es obligatorio"),
+  cantidad: z.number().positive("La cantidad a reclamar debe ser mayor a 0"),
   motivo_reclamo: z
     .string()
-    .min(10, "El motivo de reclamo debe ser detallado (min. 10 caracteres)"),
+    .min(10, "El motivo del reclamo debe ser detallado (mínimo 10 caracteres)"),
 });
 
 export const resolverGarantiaSchema = z.object({
-  //id_supervisor_aprueba: z.number().int().positive(),
-  estado: z.enum([EstadoGarantia.APROBADA, EstadoGarantia.RECHAZADA]),
-  resolucion: z.string().min(5, "Debe proveer una resolución o justificación"),
+  id_garantia: z.number().int().positive("El ID de la garantía es obligatorio"),
+  aprobado: z.boolean({
+    message: "Debe especificar si está aprobado o no",
+  }),
+  resolucion: z.string().min(5, "La resolución debe estar detallada"),
 });

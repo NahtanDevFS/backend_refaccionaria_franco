@@ -13,27 +13,35 @@ export class VentaRepository implements IVentaRepository {
 
   async obtenerVentaPorId(
     id_venta: number,
-  ): Promise<{ venta: Venta; detalles: any[] } | null> {
-    const query = `
-      SELECT * FROM venta WHERE id_venta = $1;
+  ): Promise<{ venta: any; detalles: any[] } | null> {
+    const queryVenta = `
+      SELECT v.*, COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente 
+      FROM venta v
+      LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
+      WHERE v.id_venta = $1;
+    `;
+    const queryDetalles = `
+      SELECT dv.id_detalle, dv.id_producto, p.nombre as producto, p.sku, p.garantia_dias, dv.cantidad, dv.precio_unitario, dv.subtotal_linea
+      FROM detalle_venta dv
+      JOIN producto p ON dv.id_producto = p.id_producto
+      WHERE dv.id_venta = $1;
     `;
 
     try {
-      const result = await this.pool.query(query, [id_venta]);
+      const resVenta = await this.pool.query(queryVenta, [id_venta]);
+      if (resVenta.rows.length === 0) return null;
 
-      if (result.rows.length === 0) {
-        return null;
-      }
+      const resDetalles = await this.pool.query(queryDetalles, [id_venta]);
 
-      const venta = result.rows[0];
-
-      // Mapeamos explícitamente los campos NUMERIC para evitar errores en las validaciones de TypeScript
-      venta.subtotal = Number(venta.subtotal);
-      venta.descuento_monto = Number(venta.descuento_monto);
-      venta.total = Number(venta.total);
-
-      // Para el caso de uso del pago, devolvemos el arreglo vacío para cumplir con la firma de la interfaz
-      return { venta, detalles: [] };
+      return {
+        venta: resVenta.rows[0],
+        detalles: resDetalles.rows.map((row) => ({
+          ...row,
+          cantidad: Number(row.cantidad),
+          precio_unitario: Number(row.precio_unitario),
+          subtotal_linea: Number(row.subtotal_linea),
+        })),
+      };
     } catch (error) {
       throw new Error(
         `Error al consultar la venta: ${(error as Error).message}`,

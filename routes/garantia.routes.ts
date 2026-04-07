@@ -1,22 +1,22 @@
 // routes/garantia.routes.ts
 import { Router } from "express";
 import { Pool } from "pg";
-import { GarantiaRepository } from "../repositories/GarantiaRepository";
-import { GarantiaService } from "../services/GarantiaService";
 import { GarantiaController } from "../controllers/GarantiaController";
+import { GarantiaService } from "../services/GarantiaService";
+import { GarantiaRepository } from "../repositories/GarantiaRepository";
 
-export function crearGarantiaRouter(dbPool: Pool): Router {
+export const crearGarantiaRouter = (pool: Pool): Router => {
   const router = Router();
 
-  const garantiaRepository = new GarantiaRepository(dbPool);
-  const garantiaService = new GarantiaService(garantiaRepository);
-  const garantiaController = new GarantiaController(garantiaService);
+  // Inyección de dependencias pasando el pool que viene desde index.ts
+  const repository = new GarantiaRepository(pool);
+  const service = new GarantiaService(repository);
+  const controller = new GarantiaController(service);
 
-  // POST /api/garantias/solicitar (Lo usa el vendedor)
-  router.post("/solicitar", garantiaController.solicitarGarantia);
-
-  // PUT /api/garantias/:id/resolver (Lo usa el supervisor)
-  router.put("/:id/resolver", garantiaController.resolverGarantia);
+  // Rutas (El middleware verificarToken ya se aplica en index.ts)
+  router.post("/", controller.crear);
+  router.post("/resolver", controller.resolver);
+  router.get("/sucursal/:id_sucursal/pendientes", controller.obtenerPendientes);
 
   return router;
-}
+};

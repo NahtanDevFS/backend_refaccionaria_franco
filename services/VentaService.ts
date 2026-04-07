@@ -43,4 +43,8 @@ export class VentaService {
       aprobado,
     );
   }
+
+  async obtenerVentaPorId(id_venta: number) {
+    return await this.ventaRepository.obtenerVentaPorId(id_venta);
+  }
 }

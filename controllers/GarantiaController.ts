@@ -2,92 +2,75 @@
 import { Request, Response } from "express";
 import { GarantiaService } from "../services/GarantiaService";
 import {
-  solicitarGarantiaSchema,
+  crearGarantiaSchema,
   resolverGarantiaSchema,
 } from "../schemas/garantia.schema";
-import { ZodError } from "zod";
 
 export class GarantiaController {
   constructor(private readonly garantiaService: GarantiaService) {}
 
-  solicitarGarantia = async (req: Request, res: Response): Promise<void> => {
+  crear = async (req: Request, res: Response): Promise<void> => {
     try {
-      const dtoValidado = solicitarGarantiaSchema.parse(req.body);
-      const nuevaGarantia =
-        await this.garantiaService.solicitarGarantia(dtoValidado);
+      // Validación con Zod
+      const dataValidada = crearGarantiaSchema.parse(req.body);
 
+      const id_garantia =
+        await this.garantiaService.crearGarantia(dataValidada);
       res.status(201).json({
-        exito: true,
-        mensaje: "Solicitud de garantía ingresada y en estado de revisión",
-        data: nuevaGarantia,
+        success: true,
+        message: "Garantía registrada",
+        data: { id_garantia },
       });
-    } catch (error) {
-      if (error instanceof ZodError) {
+    } catch (error: any) {
+      if (error.errors) {
+        // Error de Zod
         res.status(400).json({
-          exito: false,
-          mensaje: "Error de validación en la solicitud",
-          errores: error.issues,
+          success: false,
+          message: error.errors.map((e: any) => e.message).join(", "),
         });
-        return;
+      } else {
+        res.status(400).json({ success: false, message: error.message });
       }
-
-      res.status(400).json({
-        exito: false,
-        mensaje:
-          error instanceof Error
-            ? error.message
-            : "Error interno al procesar la solicitud",
-      });
     }
   };
 
-  // controllers/GarantiaController.ts (Actualizar método)
-  resolverGarantia = async (req: Request, res: Response): Promise<void> => {
+  resolver = async (req: Request, res: Response): Promise<void> => {
     try {
-      const idParam = req.params.id as string;
-      const id_garantia = parseInt(idParam, 10);
+      // Validación con Zod
+      const dataValidada = resolverGarantiaSchema.parse(req.body);
 
-      if (isNaN(id_garantia) || id_garantia <= 0) {
-        res
-          .status(400)
-          .json({ exito: false, mensaje: "ID de garantía inválido" });
-        return;
-      }
+      // CORRECCIÓN: Usar req.usuario en lugar de req.user
+      const id_supervisor = req.usuario?.id_empleado;
+      if (!id_supervisor) throw new Error("Usuario no autenticado");
 
-      // 1. Extraemos quién está haciendo la petición desde el token validado
-      // Usamos "!" porque el middleware ya nos garantizó que esto existe
-      const id_supervisor = req.usuario!.id_empleado;
-      const id_usuario = req.usuario!.id_usuario;
-
-      // 2. Validamos el payload (que ahora solo trae estado y resolucion)
-      const dtoValidado = resolverGarantiaSchema.parse(req.body);
-
-      // 3. Ejecutamos el servicio inyectando la identidad segura
-      const garantiaResuelta = await this.garantiaService.procesarResolucion(
-        id_garantia,
-        dtoValidado,
+      await this.garantiaService.resolverGarantia({
+        ...dataValidada,
         id_supervisor,
-        id_usuario,
-      );
-
-      res.status(200).json({
-        exito: true,
-        mensaje: `Garantía ${dtoValidado.estado} exitosamente y stock actualizado.`,
-        data: garantiaResuelta,
       });
-    } catch (error) {
-      if (error instanceof ZodError) {
+      res
+        .status(200)
+        .json({ success: true, message: "Garantía resuelta con éxito" });
+    } catch (error: any) {
+      if (error.errors) {
         res.status(400).json({
-          exito: false,
-          mensaje: "Error de validación",
-          errores: error.issues,
+          success: false,
+          message: error.errors.map((e: any) => e.message).join(", "),
         });
-        return;
+      } else {
+        res.status(400).json({ success: false, message: error.message });
       }
-      res.status(400).json({
-        exito: false,
-        mensaje: error instanceof Error ? error.message : "Error interno",
-      });
+    }
+  };
+
+  obtenerPendientes = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { id_sucursal } = req.params;
+      const data = await this.garantiaService.obtenerPendientes(
+        Number(id_sucursal),
+      );
+      res.status(200).json({ success: true, data });
+    } catch (error: any) {
+      res.status(400).json({ success: false, message: error.message });
     }
   };
 }
