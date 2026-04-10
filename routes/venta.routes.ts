@@ -22,6 +22,7 @@ export function crearVentaRouter(dbPool: Pool): Router {
     "/repartidores/activos",
     ventaController.obtenerRepartidoresActivos,
   );
+  router.get("/vendedores/activos", ventaController.obtenerVendedoresActivos);
   router.get(
     "/autorizaciones/pendientes",
     ventaController.obtenerAutorizacionesPendientes,

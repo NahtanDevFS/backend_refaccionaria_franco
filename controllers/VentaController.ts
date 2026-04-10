@@ -9,8 +9,33 @@ export class VentaController {
 
   obtenerVentas = async (req: Request, res: Response): Promise<void> => {
     try {
-      const ventas = await this.ventaService.obtenerVentas();
-      res.status(200).json(ventas);
+      const filtros = {
+        fechaInicio: req.query.fechaInicio as string,
+        fechaFin: req.query.fechaFin as string,
+        id_vendedor: req.query.id_vendedor
+          ? Number(req.query.id_vendedor)
+          : undefined,
+        estado: req.query.estado as string,
+      };
+
+      const ventas = await this.ventaService.obtenerVentas(filtros);
+      res.status(200).json({ success: true, data: ventas });
+      // Ojo: he puesto { data: ventas } porque es una buena práctica y es como lo lee tu frontend actual.
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Error interno";
+      res.status(500).json({ success: false, message: errorMessage });
+    }
+  };
+
+  obtenerVendedoresActivos = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const idSucursal = req.usuario!.id_sucursal;
+      const vendedores = await this.ventaService.obtenerVendedores(idSucursal);
+      res.status(200).json({ success: true, data: vendedores });
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : "Error interno";
@@ -105,7 +130,6 @@ export class VentaController {
     }
   };
 
-  // === NUEVO MÉTODO PARA GARANTÍAS ===
   obtenerVentaPorId = async (req: Request, res: Response): Promise<void> => {
     try {
       const id_venta = Number(req.params.id);

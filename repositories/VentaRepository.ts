@@ -15,9 +15,12 @@ export class VentaRepository implements IVentaRepository {
     id_venta: number,
   ): Promise<{ venta: any; detalles: any[] } | null> {
     const queryVenta = `
-      SELECT v.*, COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente 
+      SELECT v.*, 
+             COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente,
+             CONCAT(e.nombre, ' ', e.apellido) as vendedor
       FROM venta v
       LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
+      LEFT JOIN empleado e ON v.id_vendedor = e.id_empleado
       WHERE v.id_venta = $1;
     `;
     const queryDetalles = `
@@ -49,26 +52,59 @@ export class VentaRepository implements IVentaRepository {
     }
   }
 
-  async obtenerHistorialVentas(): Promise<any[]> {
-    const query = `
+  async obtenerHistorialVentas(filtros?: any): Promise<any[]> {
+    let query = `
       SELECT 
         v.id_venta, 
         v.created_at as fecha, 
         COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente, 
+        CONCAT(e.nombre, ' ', e.apellido) as vendedor,
+        v.canal,
+        v.subtotal,
+        v.descuento_monto as descuento,
         v.total, 
         v.estado 
       FROM venta v
       LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
-      ORDER BY v.created_at DESC
-      LIMIT 50;
+      LEFT JOIN empleado e ON v.id_vendedor = e.id_empleado
+      WHERE 1=1
     `;
 
+    const values: any[] = [];
+    let paramIndex = 1;
+
+    // Aplicar filtros dinámicos si existen
+    if (filtros?.fechaInicio) {
+      query += ` AND DATE(v.created_at) >= $${paramIndex}`;
+      values.push(filtros.fechaInicio);
+      paramIndex++;
+    }
+    if (filtros?.fechaFin) {
+      query += ` AND DATE(v.created_at) <= $${paramIndex}`;
+      values.push(filtros.fechaFin);
+      paramIndex++;
+    }
+    if (filtros?.id_vendedor) {
+      query += ` AND v.id_vendedor = $${paramIndex}`;
+      values.push(filtros.id_vendedor);
+      paramIndex++;
+    }
+    if (filtros?.estado) {
+      query += ` AND v.estado = $${paramIndex}`;
+      values.push(filtros.estado);
+      paramIndex++;
+    }
+
+    query += ` ORDER BY v.created_at DESC LIMIT 50;`;
+
     try {
-      const result = await this.pool.query(query);
+      const result = await this.pool.query(query, values);
 
       // Parseamos los numéricos por seguridad
       return result.rows.map((row) => ({
         ...row,
+        subtotal: Number(row.subtotal),
+        descuento: Number(row.descuento),
         total: Number(row.total),
       }));
     } catch (error) {
@@ -76,6 +112,19 @@ export class VentaRepository implements IVentaRepository {
         `Error al obtener el historial de ventas: ${(error as Error).message}`,
       );
     }
+  }
+
+  async obtenerVendedoresPorSucursal(id_sucursal: number): Promise<any[]> {
+    const query = `
+      SELECT e.id_empleado, e.nombre, e.apellido
+      FROM empleado e
+      INNER JOIN puesto p ON e.id_puesto = p.id_puesto
+      WHERE e.id_sucursal = $1 
+        AND p.nombre ILIKE '%vendedor%' 
+        AND e.activo = true;
+    `;
+    const result = await this.pool.query(query, [id_sucursal]);
+    return result.rows;
   }
 
   async crearOrdenVenta(data: CrearVentaDTO): Promise<number> {

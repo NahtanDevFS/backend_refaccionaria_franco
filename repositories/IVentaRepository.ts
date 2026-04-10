@@ -5,9 +5,9 @@ export interface IVentaRepository {
   obtenerVentaPorId(
     id_venta: number,
   ): Promise<{ venta: Venta; detalles: any[] } | null>;
-  obtenerHistorialVentas(): Promise<any[]>;
+  obtenerHistorialVentas(filtros?: any): Promise<any[]>;
   crearOrdenVenta(data: CrearVentaDTO): Promise<number>;
-  // Añade esta línea dentro de tu interface IVentaRepository
+  obtenerVendedoresPorSucursal(id_sucursal: number): Promise<any[]>;
   obtenerRepartidoresPorSucursal(id_sucursal: number): Promise<any[]>;
   obtenerPendientesAutorizacion(id_sucursal: number): Promise<any[]>;
   resolverAutorizacion(

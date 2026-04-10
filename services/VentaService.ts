@@ -8,8 +8,12 @@ export class VentaService {
     private readonly productoRepository: IProductoRepository,
   ) {}
 
-  async obtenerVentas() {
-    return await this.ventaRepository.obtenerHistorialVentas();
+  async obtenerVentas(filtros?: any) {
+    return await this.ventaRepository.obtenerHistorialVentas(filtros);
+  }
+
+  async obtenerVendedores(id_sucursal: number) {
+    return await this.ventaRepository.obtenerVendedoresPorSucursal(id_sucursal);
   }
 
   async crearOrdenVenta(data: CrearVentaDTO) {
