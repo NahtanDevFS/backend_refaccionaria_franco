@@ -9,6 +9,7 @@ export class VentaService {
   ) {}
 
   async obtenerVentas(filtros?: any) {
+    // El repositorio ahora devuelve { data: any[], total: number }
     return await this.ventaRepository.obtenerHistorialVentas(filtros);
   }
 

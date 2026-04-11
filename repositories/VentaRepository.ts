@@ -52,8 +52,52 @@ export class VentaRepository implements IVentaRepository {
     }
   }
 
-  async obtenerHistorialVentas(filtros?: any): Promise<any[]> {
-    let query = `
+  async obtenerHistorialVentas(
+    filtros?: any,
+  ): Promise<{ data: any[]; total: number }> {
+    // 1. Construimos la base de la consulta (FROM y WHERE) que se compartirá
+    let baseQuery = `
+      FROM venta v
+      LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
+      LEFT JOIN empleado e ON v.id_vendedor = e.id_empleado
+      WHERE 1=1
+    `;
+
+    const values: any[] = [];
+    let paramIndex = 1;
+
+    // Aplicamos filtros dinámicos
+    if (filtros?.fechaInicio) {
+      baseQuery += ` AND DATE(v.created_at) >= $${paramIndex}`;
+      values.push(filtros.fechaInicio);
+      paramIndex++;
+    }
+    if (filtros?.fechaFin) {
+      baseQuery += ` AND DATE(v.created_at) <= $${paramIndex}`;
+      values.push(filtros.fechaFin);
+      paramIndex++;
+    }
+    if (filtros?.id_vendedor) {
+      baseQuery += ` AND v.id_vendedor = $${paramIndex}`;
+      values.push(filtros.id_vendedor);
+      paramIndex++;
+    }
+    if (filtros?.estado) {
+      baseQuery += ` AND v.estado = $${paramIndex}`;
+      values.push(filtros.estado);
+      paramIndex++;
+    }
+
+    // 2. Consulta de Conteo Total (Para saber cuántas páginas habrá)
+    const countQuery = `SELECT COUNT(*) as total ` + baseQuery;
+
+    // 3. Consulta de Datos (Paginados)
+    const page = filtros?.page ? Number(filtros.page) : 1;
+    const limit = filtros?.limit ? Number(filtros.limit) : 20;
+    const offset = (page - 1) * limit;
+
+    let dataQuery =
+      `
       SELECT 
         v.id_venta, 
         v.created_at as fecha, 
@@ -64,49 +108,29 @@ export class VentaRepository implements IVentaRepository {
         v.descuento_monto as descuento,
         v.total, 
         v.estado 
-      FROM venta v
-      LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
-      LEFT JOIN empleado e ON v.id_vendedor = e.id_empleado
-      WHERE 1=1
-    `;
+    ` + baseQuery;
 
-    const values: any[] = [];
-    let paramIndex = 1;
-
-    // Aplicar filtros dinámicos si existen
-    if (filtros?.fechaInicio) {
-      query += ` AND DATE(v.created_at) >= $${paramIndex}`;
-      values.push(filtros.fechaInicio);
-      paramIndex++;
-    }
-    if (filtros?.fechaFin) {
-      query += ` AND DATE(v.created_at) <= $${paramIndex}`;
-      values.push(filtros.fechaFin);
-      paramIndex++;
-    }
-    if (filtros?.id_vendedor) {
-      query += ` AND v.id_vendedor = $${paramIndex}`;
-      values.push(filtros.id_vendedor);
-      paramIndex++;
-    }
-    if (filtros?.estado) {
-      query += ` AND v.estado = $${paramIndex}`;
-      values.push(filtros.estado);
-      paramIndex++;
-    }
-
-    query += ` ORDER BY v.created_at DESC LIMIT 50;`;
+    dataQuery += ` ORDER BY v.created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1};`;
+    const dataValues = [...values, limit, offset];
 
     try {
-      const result = await this.pool.query(query, values);
+      // Ejecutamos ambas consultas al mismo tiempo
+      const [countResult, dataResult] = await Promise.all([
+        this.pool.query(countQuery, values), // Usa los valores sin limit ni offset
+        this.pool.query(dataQuery, dataValues), // Usa los valores + limit + offset
+      ]);
+
+      const total = Number(countResult.rows[0].total);
 
       // Parseamos los numéricos por seguridad
-      return result.rows.map((row) => ({
+      const data = dataResult.rows.map((row) => ({
         ...row,
         subtotal: Number(row.subtotal),
         descuento: Number(row.descuento),
         total: Number(row.total),
       }));
+
+      return { data, total };
     } catch (error) {
       throw new Error(
         `Error al obtener el historial de ventas: ${(error as Error).message}`,

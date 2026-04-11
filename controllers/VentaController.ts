@@ -9,6 +9,10 @@ export class VentaController {
 
   obtenerVentas = async (req: Request, res: Response): Promise<void> => {
     try {
+      // 1. Extraemos los filtros y la paginación de los query params
+      const page = req.query.page ? Number(req.query.page) : 1;
+      const limit = req.query.limit ? Number(req.query.limit) : 20;
+
       const filtros = {
         fechaInicio: req.query.fechaInicio as string,
         fechaFin: req.query.fechaFin as string,
@@ -16,11 +20,29 @@ export class VentaController {
           ? Number(req.query.id_vendedor)
           : undefined,
         estado: req.query.estado as string,
+        page,
+        limit,
       };
 
-      const ventas = await this.ventaService.obtenerVentas(filtros);
-      res.status(200).json({ success: true, data: ventas });
-      // Ojo: he puesto { data: ventas } porque es una buena práctica y es como lo lee tu frontend actual.
+      // 2. Llamamos al servicio (que nos devuelve la data y el total)
+      const resultado = await this.ventaService.obtenerVentas(filtros);
+      const totalRecords = resultado.total;
+      const data = resultado.data;
+
+      // 3. Calculamos el total de páginas
+      const totalPages = Math.ceil(totalRecords / limit);
+
+      // 4. Armamos la respuesta con la estructura que leerá el frontend
+      res.status(200).json({
+        success: true,
+        data: data,
+        meta: {
+          totalRecords,
+          totalPages,
+          currentPage: page,
+          limit,
+        },
+      });
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : "Error interno";
