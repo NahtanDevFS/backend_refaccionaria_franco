@@ -86,29 +86,31 @@ export class InventarioService {
     id_modelo: number,
     anio?: number,
   ) {
-    // Busca productos compatibles o universales, trayendo el stock de la sucursal actual
     let query = `
-      SELECT DISTINCT
+      SELECT 
           p.id_producto, p.sku, p.nombre, p.precio_venta, m.nombre as marca_repuesto,
-          i.cantidad_actual as stock_local
+          COALESCE(MAX(CASE WHEN i.id_sucursal = $1 THEN i.cantidad_actual END), 0) as stock_local,
+          COALESCE(
+            json_agg(
+              json_build_object('sucursal', s.nombre, 'cantidad', i.cantidad_actual)
+            ) FILTER (WHERE i.id_sucursal != $1 AND i.cantidad_actual > 0), '[]'
+          ) as stock_otras_sucursales
       FROM producto p
-      JOIN inventario_sucursal i ON p.id_producto = i.id_producto
+      LEFT JOIN inventario_sucursal i ON p.id_producto = i.id_producto
+      LEFT JOIN sucursal s ON i.id_sucursal = s.id_sucursal
       LEFT JOIN marca m ON p.id_marca = m.id_marca
-      LEFT JOIN compatibilidad_producto cp ON p.id_producto = cp.id_producto
-      WHERE i.id_sucursal = $1 AND p.activo = true
-        AND (
-            cp.es_universal = true 
-            OR cp.id_modelo = $2 
+      WHERE p.activo = true
+        AND EXISTS (
+            SELECT 1 FROM compatibilidad_producto cp 
+            WHERE cp.id_producto = p.id_producto 
+            AND (cp.es_universal = true OR cp.id_modelo = $2)
+            ${anio ? `AND (cp.es_universal = true OR ($3 >= cp.anio_desde AND $3 <= cp.anio_hasta))` : ""}
         )
+      GROUP BY p.id_producto, m.nombre;
     `;
 
     const params: any[] = [id_sucursal, id_modelo];
-
-    // Si mandan el año, validamos que esté en el rango (pero ignoramos el año si es repuesto universal)
-    if (anio) {
-      query += ` AND (cp.es_universal = true OR ($3 >= cp.anio_desde AND $3 <= cp.anio_hasta))`;
-      params.push(anio);
-    }
+    if (anio) params.push(anio);
 
     const result = await this.pool.query(query, params);
     return result.rows.map((r) => ({
