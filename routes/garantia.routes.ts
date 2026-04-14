@@ -7,17 +7,29 @@ import { GarantiaService } from "../services/GarantiaService";
 export const crearGarantiaRouter = (pool: Pool): Router => {
   const router = Router();
 
-  // Inyección de dependencias simplificada (Directo al Pool)
   const service = new GarantiaService(pool);
   const controller = new GarantiaController(service);
 
+  // Solicitudes iniciales
   router.post("/", controller.crear);
   router.post("/resolver", controller.resolver);
-  router.get("/sucursal/:id_sucursal/pendientes", controller.obtenerPendientes);
 
-  // Puedes conectar estos endpoints más adelante en el GarantiaController
-  // router.post("/retorno/recepcion", controller.recibirRetorno);
-  // router.post("/retorno/inspeccion", controller.inspeccionarRetorno);
+  // Getters para pestañas
+  router.get("/sucursal/:id_sucursal/pendientes", controller.obtenerPendientes);
+  router.get(
+    "/sucursal/:id_sucursal/recepciones",
+    controller.obtenerPendientesRecepcion,
+  );
+  router.get(
+    "/sucursal/:id_sucursal/inspecciones",
+    controller.obtenerPendientesInspeccion,
+  );
+
+  // Acciones logísticas
+  router.post("/retorno/recepcion", controller.recibirRetorno);
+  router.post("/retorno/inspeccion", controller.inspeccionarRetorno);
+
+  router.get("/sucursal/:id_sucursal/historial", controller.obtenerHistorial);
 
   return router;
 };

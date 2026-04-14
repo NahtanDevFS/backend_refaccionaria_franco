@@ -191,4 +191,22 @@ export class InventarioService {
     const result = await this.pool.query(query, [id_producto]);
     return result.rows;
   }
+
+  async obtenerReacondicionados(id_sucursal: number) {
+    const query = `
+      SELECT 
+          lr.id_lote, lr.id_producto, lr.cantidad as stock_local, lr.precio_venta_reac as precio_venta,
+          p.sku, p.nombre, 'Reacondicionado (Segunda)' as marca_repuesto
+      FROM lote_reacondicionado lr
+      JOIN producto p ON lr.id_producto = p.id_producto
+      WHERE lr.id_sucursal = $1 AND lr.estado = 'disponible' AND lr.cantidad > 0;
+    `;
+    const result = await this.pool.query(query, [id_sucursal]);
+    return result.rows.map((r) => ({
+      ...r,
+      precio_venta: Number(r.precio_venta),
+      stock_local: Number(r.stock_local),
+      is_reacondicionado: true, // Bandera clave para el frontend
+    }));
+  }
 }

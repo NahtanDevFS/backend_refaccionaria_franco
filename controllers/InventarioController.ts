@@ -164,4 +164,25 @@ export class InventarioController {
       res.status(500).json({ error: error.message });
     }
   };
+
+  obtenerReacondicionados = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const id_sucursal =
+        Number(req.query.id_sucursal) || Number(req.usuario?.id_sucursal);
+
+      if (!id_sucursal) {
+        res.status(400).json({ error: "id_sucursal es requerido." });
+        return;
+      }
+
+      const reacondicionados =
+        await this.inventarioService.obtenerReacondicionados(id_sucursal);
+      res.json(reacondicionados);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  };
 }
