@@ -29,5 +29,9 @@ export function crearInventarioRouter(dbPool: Pool): Router {
     inventarioController.obtenerCompatibilidades,
   );
 
+  // Búsquedas generales y filtros
+  router.get("/categorias", inventarioController.obtenerCategorias);
+  router.get("/marcas-repuesto", inventarioController.obtenerMarcasRepuesto);
+
   return router;
 }

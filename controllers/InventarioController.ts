@@ -17,26 +17,56 @@ export class InventarioController {
     }
   };
 
+  obtenerCategorias = async (req: Request, res: Response): Promise<void> => {
+    try {
+      res.json(await this.inventarioService.obtenerCategorias());
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  };
+
+  obtenerMarcasRepuesto = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      res.json(await this.inventarioService.obtenerMarcasRepuesto());
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  };
+
   buscarMultiSucursal = async (req: Request, res: Response): Promise<void> => {
     try {
       const termino = req.query.q as string;
       const idSucursalLocal = Number(req.query.id_sucursal);
+      const idCategoria = req.query.id_categoria
+        ? Number(req.query.id_categoria)
+        : undefined;
+      const idMarca = req.query.id_marca
+        ? Number(req.query.id_marca)
+        : undefined;
 
-      if (!termino || termino.length < 3) {
-        res.status(400).json({
-          error: "El término de búsqueda debe tener al menos 3 caracteres.",
-        });
-        return;
-      }
       if (!idSucursalLocal) {
         res.status(400).json({ error: "id_sucursal es requerido." });
         return;
       }
 
+      // Validamos que al menos escriba algo o seleccione un filtro
+      if ((!termino || termino.length < 3) && !idCategoria && !idMarca) {
+        res.status(400).json({
+          error:
+            "Debe ingresar un término de búsqueda (mín. 3 letras) o seleccionar una categoría/marca.",
+        });
+        return;
+      }
+
       const productos =
         await this.inventarioService.buscarProductoMultiSucursal(
-          termino,
           idSucursalLocal,
+          termino,
+          idCategoria,
+          idMarca,
         );
       res.json(productos);
     } catch (error: any) {
@@ -82,11 +112,16 @@ export class InventarioController {
 
   buscarPorVehiculo = async (req: Request, res: Response): Promise<void> => {
     try {
-      // El ID sucursal se puede enviar por query o sacarlo del token del usuario logueado
       const id_sucursal =
         Number(req.query.id_sucursal) || Number(req.usuario?.id_sucursal);
       const id_modelo = Number(req.query.id_modelo);
       const anio = req.query.anio ? Number(req.query.anio) : undefined;
+      const idCategoria = req.query.id_categoria
+        ? Number(req.query.id_categoria)
+        : undefined;
+      const idMarca = req.query.id_marca
+        ? Number(req.query.id_marca)
+        : undefined;
 
       if (!id_sucursal || !id_modelo) {
         res
@@ -99,6 +134,8 @@ export class InventarioController {
         id_sucursal,
         id_modelo,
         anio,
+        idCategoria,
+        idMarca,
       );
       res.json(productos);
     } catch (error: any) {
