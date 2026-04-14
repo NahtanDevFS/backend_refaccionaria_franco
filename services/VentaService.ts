@@ -362,9 +362,7 @@ export class VentaService {
     `;
     const queryDetalles = `
       SELECT dv.id_detalle, dv.id_producto, p.nombre as producto, p.sku, p.garantia_dias, dv.cantidad, dv.precio_unitario, dv.subtotal_linea, dv.monto_iva
-      FROM detalle_venta dv
-      JOIN producto p ON dv.id_producto = p.id_producto
-      WHERE dv.id_venta = $1;
+      FROM detalle_venta dv JOIN producto p ON dv.id_producto = p.id_producto WHERE dv.id_venta = $1;
     `;
 
     const resVenta = await this.pool.query(queryVenta, [id_venta]);
@@ -379,6 +377,7 @@ export class VentaService {
         precio_unitario: Number(row.precio_unitario),
         subtotal_linea: Number(row.subtotal_linea),
         monto_iva: Number(row.monto_iva),
+        garantia_dias: Number(row.garantia_dias),
       })),
     };
   }
