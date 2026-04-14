@@ -1,18 +1,14 @@
 // routes/venta.routes.ts
 import { Router } from "express";
 import { Pool } from "pg";
-import { VentaRepository } from "../repositories/VentaRepository";
-import { ProductoRepository } from "../repositories/ProductoRepository";
 import { VentaService } from "../services/VentaService";
 import { VentaController } from "../controllers/VentaController";
 
 export function crearVentaRouter(dbPool: Pool): Router {
   const router = Router();
 
-  const ventaRepository = new VentaRepository(dbPool);
-  const productoRepository = new ProductoRepository(dbPool);
-
-  const ventaService = new VentaService(ventaRepository, productoRepository);
+  // Inyección de dependencias simplificada (Directo al Pool)
+  const ventaService = new VentaService(dbPool);
   const ventaController = new VentaController(ventaService);
 
   // Rutas estáticas primero

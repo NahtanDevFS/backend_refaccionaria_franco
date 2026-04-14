@@ -1,41 +1,76 @@
 // services/ArqueoService.ts
-import { ArqueoRepository } from "../repositories/ArqueoRepository";
-import { GenerarArqueoDTO } from "../dtos/ArqueoDTO";
+import { Pool } from "pg";
+import { ArqueoDTO } from "../dtos/ArqueoDTO";
 import { EstadoArqueo } from "../types/arqueo.types";
 
 export class ArqueoService {
-  constructor(private readonly arqueoRepository: ArqueoRepository) {}
+  constructor(private readonly pool: Pool) {}
 
-  async procesarCierreDeCaja(dto: GenerarArqueoDTO) {
-    // 1. Consultar cuánto dinero debería haber en la caja según el sistema
-    const efectivoSistema =
-      await this.arqueoRepository.obtenerEfectivoDelDiaPorCajero(dto.id_cajero);
+  async procesarCierreDeCaja(
+    dto: ArqueoDTO & {
+      id_cajero: number;
+      id_sucursal: number;
+      id_supervisor_verifica?: number;
+    },
+  ) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
 
-    // 2. Calcular la diferencia (Efectivo Físico - Efectivo Sistema)
-    // Si la diferencia es negativa, falta dinero. Si es positiva, sobra dinero.
-    const diferencia = dto.efectivo_contado - efectivoSistema;
+      // 1. Efectivo del sistema
+      const queryResumen = `
+        SELECT COALESCE(SUM(monto), 0) as total FROM pago
+        WHERE id_cajero = $1 AND DATE(fecha_pago) = CURRENT_DATE AND metodo_pago = 'efectivo' AND id_arqueo IS NULL;
+      `;
+      const resResumen = await client.query(queryResumen, [dto.id_cajero]);
+      const efectivoSistema = Number(resResumen.rows[0].total);
 
-    // 3. Determinar el estado
-    let estado = EstadoArqueo.CUADRADO;
-    if (diferencia !== 0) {
-      estado = EstadoArqueo.CON_DIFERENCIA;
+      // 2. Diferencia y Estado
+      const diferencia = dto.efectivo_contado - efectivoSistema;
+      const estado =
+        diferencia === 0 ? EstadoArqueo.CUADRADO : EstadoArqueo.CON_DIFERENCIA;
+
+      // 3. Guardar Arqueo
+      const queryInsert = `
+        INSERT INTO arqueo_caja (id_sucursal, id_cajero, id_supervisor_verifica, efectivo_contado, efectivo_segun_sistema, diferencia, observaciones, estado) 
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *;
+      `;
+      const result = await client.query(queryInsert, [
+        dto.id_sucursal,
+        dto.id_cajero,
+        dto.id_supervisor_verifica || null,
+        dto.efectivo_contado,
+        efectivoSistema,
+        diferencia,
+        dto.observaciones,
+        estado,
+      ]);
+      const arqueoRegistrado = result.rows[0];
+
+      // 4. Actualizar pagos
+      await client.query(
+        `
+        UPDATE pago SET id_arqueo = $1 
+        WHERE id_cajero = $2 AND DATE(fecha_pago) = CURRENT_DATE AND id_arqueo IS NULL
+      `,
+        [arqueoRegistrado.id_arqueo, dto.id_cajero],
+      );
+
+      await client.query("COMMIT");
+
+      return {
+        exito: true,
+        mensaje:
+          estado === EstadoArqueo.CUADRADO
+            ? "Arqueo cuadrado perfectamente."
+            : `Arqueo con diferencia detectada de Q${diferencia.toFixed(2)}.`,
+        data: arqueoRegistrado,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
     }
-
-    // 4. Guardar la evidencia de la auditoría en la base de datos
-    const arqueoRegistrado = await this.arqueoRepository.guardarArqueo(
-      dto,
-      efectivoSistema,
-      diferencia,
-      estado,
-    );
-
-    return {
-      exito: true,
-      mensaje:
-        estado === EstadoArqueo.CUADRADO
-          ? "Arqueo cuadrado perfectamente."
-          : `Arqueo con diferencia detectada de Q${diferencia.toFixed(2)}.`,
-      data: arqueoRegistrado,
-    };
   }
 }

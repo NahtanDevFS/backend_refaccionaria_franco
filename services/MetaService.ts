@@ -1,24 +1,38 @@
 // services/MetaService.ts
-import { MetaRepository } from "../repositories/MetaRepository";
+import { Pool } from "pg";
 import { AsignarMetaDTO } from "../dtos/MetaDTO";
 
 export class MetaService {
-  constructor(private readonly metaRepository: MetaRepository) {}
+  constructor(private readonly pool: Pool) {}
 
   async asignarMetaMensual(dto: AsignarMetaDTO) {
-    // Regla de Negocio: Un vendedor solo puede tener una meta por mes
-    const metaExistente = await this.metaRepository.obtenerMetaVendedor(
+    const queryExistente = `SELECT id_meta FROM meta_venta WHERE id_empleado = $1 AND anio = $2 AND mes = $3;`;
+    const resultExistente = await this.pool.query(queryExistente, [
       dto.id_empleado,
       dto.anio,
       dto.mes,
-    );
-    if (metaExistente) {
+    ]);
+
+    if (resultExistente.rows.length > 0) {
       throw new Error(
         `El empleado ID ${dto.id_empleado} ya tiene una meta asignada para el ${dto.mes}/${dto.anio}.`,
       );
     }
 
-    return await this.metaRepository.asignarMeta(dto);
+    const queryInsert = `
+      INSERT INTO meta_venta (id_empleado, anio, mes, monto_meta, comision_base_pct, comision_excedente_pct)
+      VALUES ($1, $2, $3, $4, $5, $6) RETURNING *;
+    `;
+    const resultInsert = await this.pool.query(queryInsert, [
+      dto.id_empleado,
+      dto.anio,
+      dto.mes,
+      dto.monto_meta,
+      dto.comision_base_pct,
+      dto.comision_excedente_pct,
+    ]);
+
+    return resultInsert.rows[0];
   }
 
   async calcularRendimientoYComision(
@@ -26,26 +40,28 @@ export class MetaService {
     anio: number,
     mes: number,
   ) {
-    // 1. Buscamos las condiciones del contrato (la meta asignada)
-    const meta = await this.metaRepository.obtenerMetaVendedor(
-      id_empleado,
-      anio,
-      mes,
+    // 1. Obtener Meta
+    const metaRes = await this.pool.query(
+      `SELECT * FROM meta_venta WHERE id_empleado = $1 AND anio = $2 AND mes = $3;`,
+      [id_empleado, anio, mes],
     );
-    if (!meta) {
+    if (metaRes.rows.length === 0)
       throw new Error(
-        `No se encontró una meta asignada para el empleado ID ${id_empleado} en el ${mes}/${anio}.`,
+        `No se encontró una meta asignada para el empleado ID ${id_empleado}.`,
       );
-    }
+    const meta = metaRes.rows[0];
 
-    // 2. Buscamos el rendimiento real (cuánto vendió efectivamente)
-    const totalVendido = await this.metaRepository.obtenerTotalVendido(
-      id_empleado,
-      anio,
-      mes,
+    // 2. Obtener Ventas
+    const ventasRes = await this.pool.query(
+      `
+      SELECT COALESCE(SUM(total), 0) AS total_vendido FROM venta
+      WHERE id_vendedor = $1 AND estado = 'pagada' AND EXTRACT(YEAR FROM created_at) = $2 AND EXTRACT(MONTH FROM created_at) = $3;
+    `,
+      [id_empleado, anio, mes],
     );
+    const totalVendido = Number(ventasRes.rows[0].total_vendido);
 
-    // 3. Matemáticas de la comisión
+    // 3. Matemáticas
     const montoMeta = Number(meta.monto_meta);
     const pctBase = Number(meta.comision_base_pct) / 100;
     const pctExcedente = Number(meta.comision_excedente_pct) / 100;
@@ -54,19 +70,13 @@ export class MetaService {
     let llegoALaMeta = false;
 
     if (totalVendido < montoMeta) {
-      // No llegó a la meta. Se le paga el porcentaje base sobre lo que logró vender.
       comisionCalculada = totalVendido * pctBase;
     } else {
-      // Llegó y/o superó la meta.
-      // Se paga % base sobre el monto de la meta + % excedente sobre lo que sobrepasó.
       llegoALaMeta = true;
       const excedente = totalVendido - montoMeta;
-      const pagoBase = montoMeta * pctBase;
-      const pagoExcedente = excedente * pctExcedente;
-      comisionCalculada = pagoBase + pagoExcedente;
+      comisionCalculada = montoMeta * pctBase + excedente * pctExcedente;
     }
 
-    // Retornamos un reporte detallado para el gerente
     return {
       id_empleado,
       periodo: `${mes}/${anio}`,
@@ -82,6 +92,25 @@ export class MetaService {
   }
 
   async obtenerRendimientoMensual() {
-    return await this.metaRepository.obtenerRendimientoMensual();
+    const query = `
+      SELECT 
+        e.id_empleado, CONCAT(e.nombre, ' ', e.apellido) as nombre_vendedor, m.monto_meta,
+        COALESCE(SUM(v.total), 0) as monto_vendido,
+        CASE WHEN m.monto_meta > 0 THEN (COALESCE(SUM(v.total), 0) / m.monto_meta) * 100 ELSE 0 END as porcentaje_cumplimiento
+      FROM empleado e
+      INNER JOIN meta_venta m ON e.id_empleado = m.id_empleado
+      LEFT JOIN venta v ON v.id_vendedor = e.id_empleado AND EXTRACT(MONTH FROM v.created_at) = m.mes AND EXTRACT(YEAR FROM v.created_at) = m.anio
+      WHERE m.mes = EXTRACT(MONTH FROM CURRENT_DATE) AND m.anio = EXTRACT(YEAR FROM CURRENT_DATE)
+      GROUP BY e.id_empleado, e.nombre, e.apellido, m.monto_meta;
+    `;
+
+    const result = await this.pool.query(query);
+    return result.rows.map((row) => ({
+      id_empleado: row.id_empleado,
+      nombre_vendedor: row.nombre_vendedor,
+      monto_meta: Number(row.monto_meta),
+      monto_vendido: Number(row.monto_vendido),
+      porcentaje_cumplimiento: Number(row.porcentaje_cumplimiento),
+    }));
   }
 }

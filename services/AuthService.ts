@@ -1,59 +1,80 @@
-// services/AuthService.ts
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
-import { AuthRepository } from "../repositories/AuthRepository";
+import { Pool } from "pg";
 import { LoginDTO, RegistrarUsuarioDTO } from "../dtos/AuthDTO";
 import { PayloadToken } from "../types/auth.types";
 
 export class AuthService {
-  // Las rondas de Salting determinan qué tan costoso es encriptar (10 es el estándar actual)
   private readonly SALT_ROUNDS = 10;
 
-  constructor(private readonly authRepository: AuthRepository) {}
+  constructor(private readonly pool: Pool) {}
 
   async registrar(dto: RegistrarUsuarioDTO) {
-    // Hasheamos la contraseña antes de tocar la base de datos
     const passwordHash = await bcrypt.hash(dto.password, this.SALT_ROUNDS);
+    const client = await this.pool.connect();
 
-    const nuevoUsuario = await this.authRepository.registrarUsuarioTransaccion(
-      dto.id_empleado,
-      dto.id_rol,
-      dto.username,
-      passwordHash,
-    );
+    try {
+      await client.query("BEGIN");
 
-    return {
-      id_usuario: nuevoUsuario.id_usuario,
-      username: nuevoUsuario.username,
-    };
+      // 1. Insertar el usuario
+      const insertUserQuery = `
+        INSERT INTO usuario (id_empleado, username, password_hash)
+        VALUES ($1, $2, $3)
+        RETURNING id_usuario, username;
+      `;
+      const userResult = await client.query(insertUserQuery, [
+        dto.id_empleado,
+        dto.username,
+        passwordHash,
+      ]);
+      const nuevoUsuario = userResult.rows[0];
+
+      // 2. Asignarle el rol
+      const insertRolQuery = `
+        INSERT INTO usuario_rol (id_usuario, id_rol)
+        VALUES ($1, $2);
+      `;
+      await client.query(insertRolQuery, [nuevoUsuario.id_usuario, dto.id_rol]);
+
+      await client.query("COMMIT");
+      return {
+        id_usuario: nuevoUsuario.id_usuario,
+        username: nuevoUsuario.username,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw new Error(
+        `Error al registrar usuario: ${(error as Error).message}`,
+      );
+    } finally {
+      client.release();
+    }
   }
 
   async login(dto: LoginDTO) {
     const secreto = process.env.JWT_SECRET;
-    if (!secreto) {
-      throw new Error(
-        "CONFIG ERROR: JWT_SECRET no está definido en las variables de entorno.",
-      );
-    }
+    if (!secreto) throw new Error("CONFIG ERROR: JWT_SECRET no está definido.");
 
-    // 1. Buscar si el usuario existe
-    const usuario = await this.authRepository.buscarUsuarioCompleto(
-      dto.username,
-    );
-    if (!usuario) {
-      throw new Error("Credenciales inválidas"); // Mensaje genérico por seguridad
-    }
+    const query = `
+      SELECT 
+        u.id_usuario, u.password_hash, e.id_empleado, e.id_sucursal, r.nombre AS rol
+      FROM usuario u
+      INNER JOIN empleado e ON u.id_empleado = e.id_empleado
+      INNER JOIN usuario_rol ur ON u.id_usuario = ur.id_usuario
+      INNER JOIN rol r ON ur.id_rol = r.id_rol
+      WHERE u.username = $1 AND u.activo = true;
+    `;
+    const result = await this.pool.query(query, [dto.username]);
+    const usuario = result.rows[0] || null;
 
-    // 2. Comparar la contraseña en texto plano con el Hash de la BD
+    if (!usuario) throw new Error("Credenciales inválidas");
+
     const esPasswordValido = await bcrypt.compare(
       dto.password,
       usuario.password_hash,
     );
-    if (!esPasswordValido) {
-      throw new Error("Credenciales inválidas");
-    }
+    if (!esPasswordValido) throw new Error("Credenciales inválidas");
 
-    // 3. Construir el Payload (La información que viajará dentro del Token)
     const payload: PayloadToken = {
       id_usuario: usuario.id_usuario,
       id_empleado: usuario.id_empleado,
@@ -61,14 +82,13 @@ export class AuthService {
       rol: usuario.rol,
     };
 
-    // 4. Firmar el Token (Expira en 8 horas, ideal para un turno laboral)
     const token = jwt.sign(payload, secreto, { expiresIn: "8h" });
 
     return {
       exito: true,
       mensaje: "Autenticación exitosa",
       token,
-      usuario: payload, // Le devolvemos el payload al frontend para que sepa quién se logueó
+      usuario: payload,
     };
   }
 }
