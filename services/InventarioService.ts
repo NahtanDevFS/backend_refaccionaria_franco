@@ -37,7 +37,6 @@ export class InventarioService {
     return { mensaje: "Stock consultado exitosamente", data: resultados };
   }
 
-  // Agrega estos dos métodos nuevos para alimentar los selects del frontend
   async obtenerCategorias() {
     const result = await this.pool.query(
       `SELECT id_categoria, nombre FROM categoria_producto WHERE activo = true ORDER BY nombre ASC`,
@@ -77,36 +76,58 @@ export class InventarioService {
     const params: any[] = [idSucursalLocal];
     let paramIndex = 2;
 
-    // Filtro por Texto o SKU
     if (termino && termino.trim().length > 0) {
       query += ` AND (p.nombre ILIKE $${paramIndex} OR p.sku ILIKE $${paramIndex})`;
       params.push(`%${termino.trim()}%`);
       paramIndex++;
     }
 
-    // Filtro por Categoría
     if (idCategoria) {
       query += ` AND p.id_categoria = $${paramIndex}`;
       params.push(idCategoria);
       paramIndex++;
     }
 
-    // Filtro por Marca de Repuesto
     if (idMarca) {
       query += ` AND p.id_marca = $${paramIndex}`;
       params.push(idMarca);
       paramIndex++;
     }
 
-    // Agrupamos y limitamos a 50 para no saturar la vista si buscan una categoría muy grande
     query += ` GROUP BY p.id_producto, m.nombre ORDER BY p.nombre ASC LIMIT 50;`;
 
     const result = await this.pool.query(query, params);
-    return result.rows.map((row) => ({
+    const normales = result.rows.map((row) => ({
       ...row,
       precio_venta: Number(row.precio_venta),
       stock_local: Number(row.stock_local),
+      is_reacondicionado: false,
     }));
+
+    if (normales.length === 0) return normales;
+
+    // BÚSQUEDA CONTEXTUAL DE REACONDICIONADOS
+    const ids = normales.map((n) => n.id_producto);
+    const queryReac = `
+      SELECT lr.id_lote as id_producto_reacondicionado, lr.id_producto, lr.cantidad as stock_local, lr.precio_venta_reac as precio_venta,
+             p.sku, p.nombre, 'Pieza de Segunda Mano (Garantía)' as marca_repuesto
+      FROM lote_reacondicionado lr
+      JOIN producto p ON lr.id_producto = p.id_producto
+      WHERE lr.id_sucursal = $1 AND lr.estado = 'disponible' AND lr.cantidad > 0
+        AND lr.id_producto = ANY($2::int[])
+    `;
+    const resReac = await this.pool.query(queryReac, [idSucursalLocal, ids]);
+
+    const reacondicionados = resReac.rows.map((r) => ({
+      ...r,
+      precio_venta: Number(r.precio_venta),
+      stock_local: Number(r.stock_local),
+      is_reacondicionado: true,
+      stock_otras_sucursales: [], // Los reacondicionados no se buscan en otras sucursales en esta vista
+    }));
+
+    // Retornamos ambos arreglos combinados
+    return [...normales, ...reacondicionados];
   }
 
   async obtenerMarcasVehiculo() {
@@ -170,11 +191,36 @@ export class InventarioService {
     query += ` GROUP BY p.id_producto, m.nombre ORDER BY p.nombre ASC LIMIT 50;`;
 
     const result = await this.pool.query(query, params);
-    return result.rows.map((r) => ({
+    const normales = result.rows.map((r) => ({
       ...r,
       precio_venta: Number(r.precio_venta),
       stock_local: Number(r.stock_local),
+      is_reacondicionado: false,
     }));
+
+    if (normales.length === 0) return normales;
+
+    // BÚSQUEDA CONTEXTUAL DE REACONDICIONADOS
+    const ids = normales.map((n) => n.id_producto);
+    const queryReac = `
+      SELECT lr.id_lote as id_producto_reacondicionado, lr.id_producto, lr.cantidad as stock_local, lr.precio_venta_reac as precio_venta,
+             p.sku, p.nombre, 'Pieza de Segunda Mano (Garantía)' as marca_repuesto
+      FROM lote_reacondicionado lr
+      JOIN producto p ON lr.id_producto = p.id_producto
+      WHERE lr.id_sucursal = $1 AND lr.estado = 'disponible' AND lr.cantidad > 0
+        AND lr.id_producto = ANY($2::int[])
+    `;
+    const resReac = await this.pool.query(queryReac, [id_sucursal, ids]);
+
+    const reacondicionados = resReac.rows.map((r) => ({
+      ...r,
+      precio_venta: Number(r.precio_venta),
+      stock_local: Number(r.stock_local),
+      is_reacondicionado: true,
+      stock_otras_sucursales: [],
+    }));
+
+    return [...normales, ...reacondicionados];
   }
 
   async obtenerCompatibilidadesProducto(id_producto: number) {
@@ -190,23 +236,5 @@ export class InventarioService {
     `;
     const result = await this.pool.query(query, [id_producto]);
     return result.rows;
-  }
-
-  async obtenerReacondicionados(id_sucursal: number) {
-    const query = `
-      SELECT 
-          lr.id_lote, lr.id_producto, lr.cantidad as stock_local, lr.precio_venta_reac as precio_venta,
-          p.sku, p.nombre, 'Reacondicionado (Segunda)' as marca_repuesto
-      FROM lote_reacondicionado lr
-      JOIN producto p ON lr.id_producto = p.id_producto
-      WHERE lr.id_sucursal = $1 AND lr.estado = 'disponible' AND lr.cantidad > 0;
-    `;
-    const result = await this.pool.query(query, [id_sucursal]);
-    return result.rows.map((r) => ({
-      ...r,
-      precio_venta: Number(r.precio_venta),
-      stock_local: Number(r.stock_local),
-      is_reacondicionado: true, // Bandera clave para el frontend
-    }));
   }
 }
