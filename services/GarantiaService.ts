@@ -283,4 +283,21 @@ export class GarantiaService {
     const res = await this.pool.query(query, [id_sucursal]);
     return res.rows;
   }
+
+  async obtenerReacondicionadosDisponibles(
+    id_sucursal: number,
+  ): Promise<any[]> {
+    const query = `
+      SELECT lr.id_lote as id_producto_reacondicionado, lr.cantidad, lr.precio_venta_reac,
+             p.id_producto, p.nombre, p.sku
+      FROM lote_reacondicionado lr
+      JOIN producto p ON lr.id_producto = p.id_producto
+      WHERE lr.id_sucursal = $1 AND lr.estado = 'disponible' AND lr.cantidad > 0
+    `;
+    const res = await this.pool.query(query, [id_sucursal]);
+    return res.rows.map((row) => ({
+      ...row,
+      precio_venta_reac: Number(row.precio_venta_reac),
+    }));
+  }
 }

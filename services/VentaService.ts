@@ -132,28 +132,70 @@ export class VentaService {
 
       let subtotalConIva = 0;
       let totalIvaFactura = 0;
+      const detallesCalculados = []; // <-- NUEVO: Guardaremos los precios reales aquí
 
       for (const det of data.detalles) {
-        const prodRes = await client.query(
-          `
-          SELECT p.precio_venta, i.cantidad_actual 
-          FROM producto p 
-          JOIN inventario_sucursal i ON p.id_producto = i.id_producto 
-          WHERE p.id_producto = $1 AND i.id_sucursal = $2 FOR UPDATE
-        `,
-          [det.id_producto, data.id_sucursal],
-        );
+        let precioUnitario = 0;
 
-        if (
-          prodRes.rows.length === 0 ||
-          prodRes.rows[0].cantidad_actual < det.cantidad
-        ) {
-          throw new Error(
-            `Stock insuficiente para el producto ID ${det.id_producto}`,
+        // <-- NUEVA LÓGICA DE INVENTARIO PARA REACONDICIONADOS -->
+        if (det.id_producto_reacondicionado) {
+          const reacRes = await client.query(
+            `SELECT precio_venta_reac, cantidad 
+             FROM lote_reacondicionado 
+             WHERE id_lote = $1 AND id_sucursal = $2 AND estado = 'disponible' FOR UPDATE`,
+            [det.id_producto_reacondicionado, data.id_sucursal],
+          );
+
+          if (
+            reacRes.rows.length === 0 ||
+            reacRes.rows[0].cantidad < det.cantidad
+          ) {
+            throw new Error(
+              `Stock insuficiente para el producto reacondicionado ID ${det.id_producto_reacondicionado}`,
+            );
+          }
+
+          precioUnitario = Number(reacRes.rows[0].precio_venta_reac);
+
+          await client.query(
+            `UPDATE lote_reacondicionado 
+             SET cantidad = cantidad - $1, 
+                 estado = CASE WHEN cantidad - $1 <= 0 THEN 'vendido' ELSE 'disponible' END
+             WHERE id_lote = $2`,
+            [det.cantidad, det.id_producto_reacondicionado],
+          );
+        } else {
+          // Lógica Normal
+          const prodRes = await client.query(
+            `
+            SELECT p.precio_venta, i.cantidad_actual 
+            FROM producto p 
+            JOIN inventario_sucursal i ON p.id_producto = i.id_producto 
+            WHERE p.id_producto = $1 AND i.id_sucursal = $2 FOR UPDATE
+          `,
+            [det.id_producto, data.id_sucursal],
+          );
+
+          if (
+            prodRes.rows.length === 0 ||
+            prodRes.rows[0].cantidad_actual < det.cantidad
+          ) {
+            throw new Error(
+              `Stock insuficiente para el producto ID ${det.id_producto}`,
+            );
+          }
+
+          precioUnitario = Number(prodRes.rows[0].precio_venta);
+
+          await client.query(
+            `
+            UPDATE inventario_sucursal SET cantidad_actual = cantidad_actual - $1 
+            WHERE id_producto = $2 AND id_sucursal = $3
+          `,
+            [det.cantidad, det.id_producto, data.id_sucursal],
           );
         }
 
-        const precioUnitario = Number(prodRes.rows[0].precio_venta);
         const subtotalLinea = precioUnitario * det.cantidad;
 
         // Desglose de IVA
@@ -163,13 +205,12 @@ export class VentaService {
         subtotalConIva += subtotalLinea;
         totalIvaFactura += montoIvaLinea;
 
-        await client.query(
-          `
-          UPDATE inventario_sucursal SET cantidad_actual = cantidad_actual - $1 
-          WHERE id_producto = $2 AND id_sucursal = $3
-        `,
-          [det.cantidad, det.id_producto, data.id_sucursal],
-        );
+        detallesCalculados.push({
+          ...det,
+          precioUnitario,
+          subtotalLinea,
+          montoIvaLinea: Number(montoIvaLinea.toFixed(2)),
+        });
       }
 
       const pctDescuento = data.descuento_porcentaje || 0;
@@ -205,14 +246,22 @@ export class VentaService {
 
       const id_venta = ventaRes.rows[0].id_venta;
 
-      for (const det of data.detalles) {
+      // <-- NUEVA FORMA DE INSERTAR DETALLES -->
+      for (const det of detallesCalculados) {
         await client.query(
           `
-          INSERT INTO detalle_venta (id_venta, id_producto, cantidad, precio_unitario, subtotal_linea, porcentaje_iva, monto_iva)
-          SELECT $1, $2, $3, precio_venta, (precio_venta * $3), 12.00, ROUND(CAST(((precio_venta * $3) - ((precio_venta * $3)/1.12)) AS numeric), 2)
-          FROM producto WHERE id_producto = $2
+          INSERT INTO detalle_venta (id_venta, id_producto, id_producto_reacondicionado, cantidad, precio_unitario, subtotal_linea, porcentaje_iva, monto_iva)
+          VALUES ($1, $2, $3, $4, $5, $6, 12.00, $7)
         `,
-          [id_venta, det.id_producto, det.cantidad],
+          [
+            id_venta,
+            det.id_producto,
+            det.id_producto_reacondicionado || null,
+            det.cantidad,
+            det.precioUnitario,
+            det.subtotalLinea,
+            det.montoIvaLinea,
+          ],
         );
       }
 

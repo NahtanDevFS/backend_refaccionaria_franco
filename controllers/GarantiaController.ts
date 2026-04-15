@@ -156,4 +156,19 @@ export class GarantiaController {
       res.status(400).json({ success: false, message: error.message });
     }
   };
+
+  obtenerReacondicionados = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const data =
+        await this.garantiaService.obtenerReacondicionadosDisponibles(
+          Number(req.params.id_sucursal),
+        );
+      res.status(200).json({ success: true, data });
+    } catch (error: any) {
+      res.status(400).json({ success: false, message: error.message });
+    }
+  };
 }

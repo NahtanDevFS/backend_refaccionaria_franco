@@ -31,5 +31,11 @@ export const crearGarantiaRouter = (pool: Pool): Router => {
 
   router.get("/sucursal/:id_sucursal/historial", controller.obtenerHistorial);
 
+  // NUEVO: Ruta para reacondicionados
+  router.get(
+    "/sucursal/:id_sucursal/reacondicionados",
+    controller.obtenerReacondicionados,
+  );
+
   return router;
 };

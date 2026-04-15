@@ -10,6 +10,7 @@ export interface ClienteNuevoDTO {
 
 export interface DetalleOrdenDTO {
   id_producto: number;
+  id_producto_reacondicionado?: number;
   cantidad: number;
 }
 
