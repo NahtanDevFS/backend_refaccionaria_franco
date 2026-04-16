@@ -6,34 +6,41 @@ export class VentaService {
 
   async obtenerVentas(filtros?: any): Promise<{ data: any[]; total: number }> {
     let baseQuery = `
-      FROM venta v
-      LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
-      LEFT JOIN empleado e ON v.id_vendedor = e.id_empleado
-      WHERE 1=1
-    `;
+    FROM venta v
+    LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
+    LEFT JOIN empleado e ON v.id_vendedor = e.id_empleado
+    WHERE 1=1
+  `;
 
     const values: any[] = [];
     let paramIndex = 1;
 
-    if (filtros?.fechaInicio) {
-      baseQuery += ` AND DATE(v.created_at) >= $${paramIndex}`;
-      values.push(filtros.fechaInicio);
+    // NUEVO: búsqueda directa por ID — si se provee, ignora los demás filtros
+    if (filtros?.id_venta) {
+      baseQuery += ` AND v.id_venta = $${paramIndex}`;
+      values.push(Number(filtros.id_venta));
       paramIndex++;
-    }
-    if (filtros?.fechaFin) {
-      baseQuery += ` AND DATE(v.created_at) <= $${paramIndex}`;
-      values.push(filtros.fechaFin);
-      paramIndex++;
-    }
-    if (filtros?.id_vendedor) {
-      baseQuery += ` AND v.id_vendedor = $${paramIndex}`;
-      values.push(filtros.id_vendedor);
-      paramIndex++;
-    }
-    if (filtros?.estado) {
-      baseQuery += ` AND v.estado = $${paramIndex}`;
-      values.push(filtros.estado);
-      paramIndex++;
+    } else {
+      if (filtros?.fechaInicio) {
+        baseQuery += ` AND DATE(v.created_at) >= $${paramIndex}`;
+        values.push(filtros.fechaInicio);
+        paramIndex++;
+      }
+      if (filtros?.fechaFin) {
+        baseQuery += ` AND DATE(v.created_at) <= $${paramIndex}`;
+        values.push(filtros.fechaFin);
+        paramIndex++;
+      }
+      if (filtros?.id_vendedor) {
+        baseQuery += ` AND v.id_vendedor = $${paramIndex}`;
+        values.push(filtros.id_vendedor);
+        paramIndex++;
+      }
+      if (filtros?.estado) {
+        baseQuery += ` AND v.estado = $${paramIndex}`;
+        values.push(filtros.estado);
+        paramIndex++;
+      }
     }
 
     const countQuery = `SELECT COUNT(*) as total ` + baseQuery;
@@ -44,41 +51,37 @@ export class VentaService {
 
     let dataQuery =
       `
-      SELECT 
-        v.id_venta, 
-        v.created_at as fecha, 
-        COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente, 
-        CONCAT(e.nombre, ' ', e.apellido) as vendedor,
-        v.canal,
-        v.subtotal,
-        v.descuento_monto as descuento,
-        v.monto_iva,
-        v.total, 
-        v.estado 
-    ` + baseQuery;
+    SELECT
+      v.id_venta,
+      v.created_at as fecha,
+      COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente,
+      CONCAT(e.nombre, ' ', e.apellido) as vendedor,
+      v.canal,
+      v.subtotal,
+      v.descuento_monto as descuento,
+      v.monto_iva,
+      v.total,
+      v.estado
+  ` + baseQuery;
 
     dataQuery += ` ORDER BY v.created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1};`;
     const dataValues = [...values, limit, offset];
 
-    try {
-      const [countResult, dataResult] = await Promise.all([
-        this.pool.query(countQuery, values),
-        this.pool.query(dataQuery, dataValues),
-      ]);
+    const [countResult, dataResult] = await Promise.all([
+      this.pool.query(countQuery, values),
+      this.pool.query(dataQuery, dataValues),
+    ]);
 
-      const total = Number(countResult.rows[0].total);
-      const data = dataResult.rows.map((row) => ({
-        ...row,
-        subtotal: Number(row.subtotal),
-        descuento: Number(row.descuento),
-        monto_iva: Number(row.monto_iva),
-        total: Number(row.total),
-      }));
+    const total = Number(countResult.rows[0].total);
+    const data = dataResult.rows.map((row) => ({
+      ...row,
+      subtotal: Number(row.subtotal),
+      descuento: Number(row.descuento),
+      monto_iva: Number(row.monto_iva),
+      total: Number(row.total),
+    }));
 
-      return { data, total };
-    } catch (error) {
-      throw new Error(`Error al obtener ventas: ${(error as Error).message}`);
-    }
+    return { data, total };
   }
 
   async obtenerVendedores(id_sucursal: number): Promise<any[]> {

@@ -9,11 +9,11 @@ export class VentaController {
 
   obtenerVentas = async (req: Request, res: Response): Promise<void> => {
     try {
-      // 1. Extraemos los filtros y la paginación de los query params
       const page = req.query.page ? Number(req.query.page) : 1;
       const limit = req.query.limit ? Number(req.query.limit) : 20;
 
       const filtros = {
+        id_venta: req.query.id_venta ? Number(req.query.id_venta) : undefined, // única línea nueva
         fechaInicio: req.query.fechaInicio as string,
         fechaFin: req.query.fechaFin as string,
         id_vendedor: req.query.id_vendedor
@@ -24,20 +24,14 @@ export class VentaController {
         limit,
       };
 
-      // 2. Llamamos al servicio (que nos devuelve la data y el total)
       const resultado = await this.ventaService.obtenerVentas(filtros);
-      const totalRecords = resultado.total;
-      const data = resultado.data;
+      const totalPages = Math.ceil(resultado.total / limit);
 
-      // 3. Calculamos el total de páginas
-      const totalPages = Math.ceil(totalRecords / limit);
-
-      // 4. Armamos la respuesta con la estructura que leerá el frontend
       res.status(200).json({
         success: true,
-        data: data,
+        data: resultado.data,
         meta: {
-          totalRecords,
+          totalRecords: resultado.total,
           totalPages,
           currentPage: page,
           limit,
@@ -67,30 +61,63 @@ export class VentaController {
 
   crearOrden = async (req: Request, res: Response): Promise<void> => {
     try {
-      const payload = crearVentaSchema.parse(req.body);
-
-      const dtoValidado = {
-        ...payload,
-        id_sucursal: req.usuario!.id_sucursal,
-        id_vendedor: req.usuario!.id_empleado,
-      };
-
-      const idVenta = await this.ventaService.crearOrdenVenta(dtoValidado);
-
-      res.status(201).json({
-        success: true,
-        id_venta: idVenta,
-        message: "Orden de venta creada exitosamente (Pendiente de pago)",
-      });
+      const id_venta = await this.ventaService.crearOrdenVenta(req.body);
+      res.status(201).json({ success: true, data: { id_venta } });
     } catch (error) {
-      if (error instanceof ZodError) {
-        res.status(400).json({
-          success: false,
-          message: "Error de validación en los datos de entrada",
-          errors: error.issues,
-        });
+      const errorMessage =
+        error instanceof Error ? error.message : "Error interno";
+      res.status(400).json({ success: false, message: errorMessage });
+    }
+  };
+
+  obtenerVentaPorId = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const id_venta = Number(req.params.id_venta);
+      const resultado = await this.ventaService.obtenerVentaPorId(id_venta);
+      if (!resultado) {
+        res
+          .status(404)
+          .json({ success: false, message: "Venta no encontrada" });
         return;
       }
+      res.status(200).json({ success: true, data: resultado });
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Error interno";
+      res.status(500).json({ success: false, message: errorMessage });
+    }
+  };
+
+  obtenerAutorizacionesPendientes = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const id_sucursal = req.usuario!.id_sucursal;
+      const pendientes =
+        await this.ventaService.obtenerPendientesAutorizacion(id_sucursal);
+      res.status(200).json({ success: true, data: pendientes });
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Error interno";
+      res.status(500).json({ success: false, message: errorMessage });
+    }
+  };
+
+  resolverAutorizacion = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { id_venta, aprobado } = req.body;
+      const id_supervisor = req.usuario!.id_empleado;
+      const id_usuario_log = req.usuario!.id_usuario;
+
+      await this.ventaService.resolverAutorizacion(
+        id_venta,
+        id_supervisor,
+        id_usuario_log,
+        aprobado,
+      );
+      res.status(200).json({ success: true, message: "Resolución registrada" });
+    } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : "Error interno";
       res.status(400).json({ success: false, message: errorMessage });
@@ -105,72 +132,7 @@ export class VentaController {
       const idSucursal = req.usuario!.id_sucursal;
       const repartidores =
         await this.ventaService.obtenerRepartidores(idSucursal);
-      res.status(200).json(repartidores);
-    } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : "Error interno";
-      res.status(500).json({ success: false, message: errorMessage });
-    }
-  };
-
-  obtenerAutorizacionesPendientes = async (
-    req: Request,
-    res: Response,
-  ): Promise<void> => {
-    try {
-      const idSucursal = req.usuario!.id_sucursal;
-      const ventas =
-        await this.ventaService.obtenerPendientesAutorizacion(idSucursal);
-      res.status(200).json(ventas);
-    } catch (error) {
-      res
-        .status(500)
-        .json({ success: false, message: (error as Error).message });
-    }
-  };
-
-  resolverAutorizacion = async (req: Request, res: Response): Promise<void> => {
-    try {
-      const { id_venta, aprobado } = req.body;
-      const idSupervisor = req.usuario!.id_empleado;
-      const idUsuarioLog = req.usuario!.id_usuario;
-
-      await this.ventaService.resolverAutorizacion(
-        id_venta,
-        idSupervisor,
-        idUsuarioLog,
-        aprobado,
-      );
-      res.status(200).json({
-        success: true,
-        message: `Descuento ${aprobado ? "aprobado" : "rechazado"}`,
-      });
-    } catch (error) {
-      res
-        .status(500)
-        .json({ success: false, message: (error as Error).message });
-    }
-  };
-
-  obtenerVentaPorId = async (req: Request, res: Response): Promise<void> => {
-    try {
-      const id_venta = Number(req.params.id);
-      if (isNaN(id_venta)) {
-        res
-          .status(400)
-          .json({ success: false, message: "ID de venta inválido" });
-        return;
-      }
-
-      const data = await this.ventaService.obtenerVentaPorId(id_venta);
-      if (!data) {
-        res
-          .status(404)
-          .json({ success: false, message: "Ticket no encontrado" });
-        return;
-      }
-
-      res.status(200).json({ success: true, data });
+      res.status(200).json({ success: true, data: repartidores });
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : "Error interno";
