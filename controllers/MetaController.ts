@@ -7,6 +7,7 @@ import { ZodError } from "zod";
 export class MetaController {
   constructor(private readonly metaService: MetaService) {}
 
+  // ─── Asignar meta ───────────────────────────────────────────────────────
   asignarMeta = async (req: Request, res: Response): Promise<void> => {
     try {
       const dtoValidado = asignarMetaSchema.parse(req.body);
@@ -37,9 +38,9 @@ export class MetaController {
     }
   };
 
+  // ─── Cálculo de comisiones (sin cambios) ────────────────────────────────
   consultarRendimiento = async (req: Request, res: Response): Promise<void> => {
     try {
-      // Extraemos los parámetros de la URL: /api/metas/rendimiento/:id_empleado/:anio/:mes
       const id_empleado = parseInt(req.params.id_empleado as string, 10);
       const anio = parseInt(req.params.anio as string, 10);
       const mes = parseInt(req.params.mes as string, 10);
@@ -73,14 +74,23 @@ export class MetaController {
     }
   };
 
+  // ─── Rendimiento mensual filtrado por sucursal ──────────────────────────
   obtenerRendimientoMensual = async (
     req: Request,
     res: Response,
   ): Promise<void> => {
     try {
-      const rendimientos = await this.metaService.obtenerRendimientoMensual();
+      const usuario = req.usuario!;
+      const idSucursalQuery = req.query.id_sucursal
+        ? parseInt(req.query.id_sucursal as string, 10)
+        : undefined;
 
-      // Retornamos directamente el arreglo para que el frontend lo pueda mapear (datosMostrar.map)
+      const rendimientos = await this.metaService.obtenerRendimientoMensual(
+        usuario.rol,
+        usuario.id_sucursal,
+        idSucursalQuery,
+      );
+
       res.status(200).json(rendimientos);
     } catch (error) {
       const errorMessage =
@@ -88,6 +98,135 @@ export class MetaController {
       res.status(500).json({
         success: false,
         message: errorMessage,
+      });
+    }
+  };
+
+  // ─── Consolidado de la sucursal (mes actual) ────────────────────────────
+  obtenerConsolidado = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const usuario = req.usuario!;
+      const idSucursalQuery = req.query.id_sucursal
+        ? parseInt(req.query.id_sucursal as string, 10)
+        : undefined;
+
+      const consolidado = await this.metaService.obtenerConsolidadoSucursal(
+        usuario.rol,
+        usuario.id_sucursal,
+        idSucursalQuery,
+      );
+
+      res.status(200).json(consolidado);
+    } catch (error) {
+      res.status(500).json({
+        exito: false,
+        mensaje:
+          error instanceof Error
+            ? error.message
+            : "Error al obtener consolidado",
+      });
+    }
+  };
+
+  // ─── Vendedores disponibles para asignar meta ───────────────────────────
+  obtenerVendedoresAsignacion = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const usuario = req.usuario!;
+      const anio = parseInt(req.query.anio as string, 10);
+      const mes = parseInt(req.query.mes as string, 10);
+      const idSucursalQuery = req.query.id_sucursal
+        ? parseInt(req.query.id_sucursal as string, 10)
+        : undefined;
+
+      if (isNaN(anio) || isNaN(mes)) {
+        res.status(400).json({
+          exito: false,
+          mensaje: "Año y mes son obligatorios",
+        });
+        return;
+      }
+
+      const vendedores = await this.metaService.obtenerVendedoresParaAsignar(
+        usuario.rol,
+        usuario.id_sucursal,
+        anio,
+        mes,
+        idSucursalQuery,
+      );
+
+      res.status(200).json(vendedores);
+    } catch (error) {
+      res.status(500).json({
+        exito: false,
+        mensaje:
+          error instanceof Error
+            ? error.message
+            : "Error al obtener vendedores",
+      });
+    }
+  };
+
+  // ─── Sugerencia automática de meta ──────────────────────────────────────
+  obtenerSugerencia = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const id_empleado = parseInt(req.params.id_empleado as string, 10);
+      if (isNaN(id_empleado)) {
+        res
+          .status(400)
+          .json({ exito: false, mensaje: "ID de empleado inválido" });
+        return;
+      }
+
+      const sugerencia =
+        await this.metaService.obtenerSugerenciaMeta(id_empleado);
+      res.status(200).json(sugerencia);
+    } catch (error) {
+      res.status(500).json({
+        exito: false,
+        mensaje:
+          error instanceof Error
+            ? error.message
+            : "Error al obtener sugerencia",
+      });
+    }
+  };
+
+  // ─── Listar sucursales (para selector) ──────────────────────────────────
+  obtenerSucursales = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const sucursales = await this.metaService.listarSucursales();
+      res.status(200).json(sucursales);
+    } catch (error) {
+      res.status(500).json({
+        exito: false,
+        mensaje:
+          error instanceof Error ? error.message : "Error al listar sucursales",
+      });
+    }
+  };
+
+  // ─── Historial de metas de un empleado ──────────────────────────────────
+  obtenerHistorial = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const id_empleado = parseInt(req.params.id_empleado as string, 10);
+      if (isNaN(id_empleado)) {
+        res
+          .status(400)
+          .json({ exito: false, mensaje: "ID de empleado inválido" });
+        return;
+      }
+
+      const historial =
+        await this.metaService.obtenerHistorialEmpleado(id_empleado);
+      res.status(200).json(historial);
+    } catch (error) {
+      res.status(500).json({
+        exito: false,
+        mensaje:
+          error instanceof Error ? error.message : "Error al obtener historial",
       });
     }
   };
