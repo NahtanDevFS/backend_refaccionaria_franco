@@ -10,6 +10,7 @@ export class BodegaService {
       SELECT 
         i.id_inventario, i.id_producto, p.sku, p.nombre, i.cantidad_actual, i.punto_reorden,
         c.nombre as categoria, m.nombre as marca_repuesto,
+        p.precio_venta, p.precio_costo as costo, -- <-- CORREGIDO AQUÍ
         (i.cantidad_actual <= i.punto_reorden) as requiere_reorden,
         (SELECT COALESCE(SUM(i2.cantidad_actual), 0) FROM inventario_sucursal i2 WHERE i2.id_producto = p.id_producto AND i2.id_sucursal != $1) as stock_otras_sucursales,
         (SELECT COALESCE(json_agg(json_build_object('sucursal', s.nombre, 'cantidad', i2.cantidad_actual)), '[]'::json)
@@ -36,28 +37,24 @@ export class BodegaService {
     const params: any[] = [id_sucursal];
     let paramIndex = 2;
 
-    // Filtro por texto (SKU o Nombre)
     if (filtros?.termino) {
       query += ` AND (p.sku ILIKE $${paramIndex} OR p.nombre ILIKE $${paramIndex})`;
       params.push(`%${filtros.termino}%`);
       paramIndex++;
     }
 
-    // Filtro por Categoría
     if (filtros?.id_categoria) {
       query += ` AND p.id_categoria = $${paramIndex}`;
       params.push(filtros.id_categoria);
       paramIndex++;
     }
 
-    // Filtro por Marca de Repuesto
     if (filtros?.id_marca) {
       query += ` AND p.id_marca = $${paramIndex}`;
       params.push(filtros.id_marca);
       paramIndex++;
     }
 
-    // Filtro por Vehículo (Compatibilidad)
     if (filtros?.id_modelo_vehiculo) {
       query += ` AND EXISTS (
         SELECT 1 FROM compatibilidad_producto cp 
@@ -67,7 +64,6 @@ export class BodegaService {
       paramIndex++;
     }
 
-    // Añadimos ordenamiento y un límite para evitar sobrecargar la vista si no hay filtros
     query += ` ORDER BY requiere_reorden DESC, p.nombre ASC LIMIT 200;`;
 
     const result = await this.pool.query(query, params);
@@ -77,6 +73,8 @@ export class BodegaService {
       cantidad_actual: Number(row.cantidad_actual),
       punto_reorden: Number(row.punto_reorden),
       stock_otras_sucursales: Number(row.stock_otras_sucursales),
+      precio_venta: Number(row.precio_venta || 0),
+      costo: Number(row.costo || 0),
     }));
   }
 
