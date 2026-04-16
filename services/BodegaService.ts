@@ -9,13 +9,27 @@ export class BodegaService {
     let query = `
       SELECT 
         i.id_inventario, i.id_producto, p.sku, p.nombre, i.cantidad_actual, i.punto_reorden,
+        c.nombre as categoria, m.nombre as marca_repuesto,
         (i.cantidad_actual <= i.punto_reorden) as requiere_reorden,
         (SELECT COALESCE(SUM(i2.cantidad_actual), 0) FROM inventario_sucursal i2 WHERE i2.id_producto = p.id_producto AND i2.id_sucursal != $1) as stock_otras_sucursales,
         (SELECT COALESCE(json_agg(json_build_object('sucursal', s.nombre, 'cantidad', i2.cantidad_actual)), '[]'::json)
          FROM inventario_sucursal i2 JOIN sucursal s ON i2.id_sucursal = s.id_sucursal
-         WHERE i2.id_producto = p.id_producto AND i2.id_sucursal != $1 AND i2.cantidad_actual > 0) as detalle_otras_sucursales
+         WHERE i2.id_producto = p.id_producto AND i2.id_sucursal != $1 AND i2.cantidad_actual > 0) as detalle_otras_sucursales,
+        (SELECT COALESCE(json_agg(json_build_object(
+            'marca', mv.nombre, 
+            'modelo', mod.nombre, 
+            'anio_desde', cp.anio_desde, 
+            'anio_hasta', cp.anio_hasta, 
+            'es_universal', cp.es_universal
+          )), '[]'::json)
+         FROM compatibilidad_producto cp
+         LEFT JOIN modelo_vehiculo mod ON cp.id_modelo = mod.id_modelo
+         LEFT JOIN marca_vehiculo mv ON mod.id_marca_vehiculo = mv.id_marca_vehiculo
+         WHERE cp.id_producto = p.id_producto) as compatibilidades
       FROM inventario_sucursal i
       JOIN producto p ON i.id_producto = p.id_producto
+      LEFT JOIN categoria_producto c ON p.id_categoria = c.id_categoria
+      LEFT JOIN marca m ON p.id_marca = m.id_marca
       WHERE i.id_sucursal = $1
     `;
 
@@ -53,7 +67,7 @@ export class BodegaService {
       paramIndex++;
     }
 
-    // Añadimos ordenamiento y un límite de 200 para evitar sobrecargar la vista si no hay filtros
+    // Añadimos ordenamiento y un límite para evitar sobrecargar la vista si no hay filtros
     query += ` ORDER BY requiere_reorden DESC, p.nombre ASC LIMIT 200;`;
 
     const result = await this.pool.query(query, params);
