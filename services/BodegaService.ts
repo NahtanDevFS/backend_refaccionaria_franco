@@ -5,8 +5,8 @@ import { EmitirDespachoDTO, AjusteInventarioDTO } from "../dtos/BodegaDTO";
 export class BodegaService {
   constructor(private readonly pool: Pool) {}
 
-  async obtenerInventarioLocal(id_sucursal: number) {
-    const query = `
+  async obtenerInventarioLocal(id_sucursal: number, filtros?: any) {
+    let query = `
       SELECT 
         i.id_inventario, i.id_producto, p.sku, p.nombre, i.cantidad_actual, i.punto_reorden,
         (i.cantidad_actual <= i.punto_reorden) as requiere_reorden,
@@ -17,9 +17,47 @@ export class BodegaService {
       FROM inventario_sucursal i
       JOIN producto p ON i.id_producto = p.id_producto
       WHERE i.id_sucursal = $1
-      ORDER BY requiere_reorden DESC, p.nombre ASC;
     `;
-    const result = await this.pool.query(query, [id_sucursal]);
+
+    const params: any[] = [id_sucursal];
+    let paramIndex = 2;
+
+    // Filtro por texto (SKU o Nombre)
+    if (filtros?.termino) {
+      query += ` AND (p.sku ILIKE $${paramIndex} OR p.nombre ILIKE $${paramIndex})`;
+      params.push(`%${filtros.termino}%`);
+      paramIndex++;
+    }
+
+    // Filtro por Categoría
+    if (filtros?.id_categoria) {
+      query += ` AND p.id_categoria = $${paramIndex}`;
+      params.push(filtros.id_categoria);
+      paramIndex++;
+    }
+
+    // Filtro por Marca de Repuesto
+    if (filtros?.id_marca) {
+      query += ` AND p.id_marca = $${paramIndex}`;
+      params.push(filtros.id_marca);
+      paramIndex++;
+    }
+
+    // Filtro por Vehículo (Compatibilidad)
+    if (filtros?.id_modelo_vehiculo) {
+      query += ` AND EXISTS (
+        SELECT 1 FROM compatibilidad_producto cp 
+        WHERE cp.id_producto = p.id_producto AND (cp.es_universal = true OR cp.id_modelo = $${paramIndex})
+      )`;
+      params.push(filtros.id_modelo_vehiculo);
+      paramIndex++;
+    }
+
+    // Añadimos ordenamiento y un límite de 200 para evitar sobrecargar la vista si no hay filtros
+    query += ` ORDER BY requiere_reorden DESC, p.nombre ASC LIMIT 200;`;
+
+    const result = await this.pool.query(query, params);
+
     return result.rows.map((row) => ({
       ...row,
       cantidad_actual: Number(row.cantidad_actual),

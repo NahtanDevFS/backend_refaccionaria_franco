@@ -12,8 +12,12 @@ export class BodegaController {
   obtenerInventario = async (req: Request, res: Response): Promise<void> => {
     try {
       const id_sucursal = req.usuario!.id_sucursal;
-      const inventario =
-        await this.bodegaService.obtenerInventarioLocal(id_sucursal);
+      const filtros = req.query; // Capturamos los query params de la URL
+
+      const inventario = await this.bodegaService.obtenerInventarioLocal(
+        id_sucursal,
+        filtros,
+      );
       res.status(200).json({ success: true, data: inventario });
     } catch (error: any) {
       res.status(500).json({ success: false, message: error.message });
@@ -31,13 +35,11 @@ export class BodegaController {
         id_usuario,
         payload,
       );
-      res
-        .status(201)
-        .json({
-          success: true,
-          message: "Despacho emitido exitosamente",
-          data: { id_despacho },
-        });
+      res.status(201).json({
+        success: true,
+        message: "Despacho emitido exitosamente",
+        data: { id_despacho },
+      });
     } catch (error: any) {
       const errorMsg = error.errors
         ? error.errors.map((e: any) => e.message).join(", ")
@@ -67,12 +69,10 @@ export class BodegaController {
         id_sucursal,
         id_usuario,
       );
-      res
-        .status(200)
-        .json({
-          success: true,
-          message: "Mercadería recibida e ingresada al inventario.",
-        });
+      res.status(200).json({
+        success: true,
+        message: "Mercadería recibida e ingresada al inventario.",
+      });
     } catch (error: any) {
       res.status(400).json({ success: false, message: error.message });
     }
