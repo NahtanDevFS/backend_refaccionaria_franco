@@ -13,6 +13,7 @@ export function crearCajaRouter(dbPool: Pool): Router {
   router.post("/cobrar", controller.cobrar);
   router.get("/resumen", controller.obtenerResumen);
   router.post("/arqueo", controller.registrarArqueo);
+  router.get("/historial", controller.obtenerHistorial);
 
   return router;
 }

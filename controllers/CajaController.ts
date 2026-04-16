@@ -1,3 +1,4 @@
+// controllers/CajaController.ts
 import { Request, Response } from "express";
 import { CajaService } from "../services/CajaService";
 import {
@@ -24,20 +25,16 @@ export class CajaController {
       const payload = registrarPagoSchema.parse(req.body);
 
       await this.cajaService.registrarPago(id_cajero, payload);
-      res
-        .status(200)
-        .json({
-          success: true,
-          message: "Pago registrado y orden completada exitosamente",
-        });
+      res.status(200).json({
+        success: true,
+        message: "Pago registrado y orden completada exitosamente",
+      });
     } catch (error: any) {
       if (error.errors) {
-        res
-          .status(400)
-          .json({
-            success: false,
-            message: error.errors.map((e: any) => e.message).join(", "),
-          });
+        res.status(400).json({
+          success: false,
+          message: error.errors.map((e: any) => e.message).join(", "),
+        });
       } else {
         res.status(400).json({ success: false, message: error.message });
       }
@@ -65,24 +62,37 @@ export class CajaController {
         id_cajero,
         payload,
       );
-      res
-        .status(201)
-        .json({
-          success: true,
-          message: "Arqueo de caja registrado correctamente",
-          data: { id_arqueo },
-        });
+      res.status(201).json({
+        success: true,
+        message: "Arqueo de caja registrado correctamente",
+        data: { id_arqueo },
+      });
     } catch (error: any) {
       if (error.errors) {
-        res
-          .status(400)
-          .json({
-            success: false,
-            message: error.errors.map((e: any) => e.message).join(", "),
-          });
+        res.status(400).json({
+          success: false,
+          message: error.errors.map((e: any) => e.message).join(", "),
+        });
       } else {
         res.status(400).json({ success: false, message: error.message });
       }
+    }
+  };
+
+  // NUEVO
+  obtenerHistorial = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const id_sucursal = req.usuario!.id_sucursal;
+      const { desde, hasta } = req.query as { desde?: string; hasta?: string };
+
+      const historial = await this.cajaService.obtenerHistorial(
+        id_sucursal,
+        desde,
+        hasta,
+      );
+      res.status(200).json({ success: true, data: historial });
+    } catch (error: any) {
+      res.status(500).json({ success: false, message: error.message });
     }
   };
 }
