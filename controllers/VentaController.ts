@@ -14,13 +14,6 @@ export class VentaController {
       const page = req.query.page ? Number(req.query.page) : 1;
       const limit = req.query.limit ? Number(req.query.limit) : 20;
 
-      console.log("ROL:", req.usuario?.rol);
-      console.log("ID_SUCURSAL:", req.usuario?.id_sucursal);
-      console.log(
-        "ES_GLOBAL:",
-        ROLES_GLOBALES.includes(req.usuario?.rol as string),
-      );
-
       const rol = req.usuario!.rol;
       const idSucToken = req.usuario!.id_sucursal;
       const esGlobal = ROLES_GLOBALES.includes(rol);
