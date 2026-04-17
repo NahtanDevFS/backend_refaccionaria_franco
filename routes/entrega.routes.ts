@@ -12,5 +12,7 @@ export function crearEntregaRouter(dbPool: Pool): Router {
   router.post("/:id/exito", controller.marcarExito);
   router.post("/:id/fallida", controller.marcarFallida);
 
+  router.get("/comprobante/:id_pago", controller.obtenerComprobante);
+
   return router;
 }

@@ -25,22 +25,23 @@ export class EntregaController {
       const id_repartidor = req.usuario!.id_empleado;
       const payload = entregaExitosaSchema.parse(req.body);
 
-      await this.entregaService.marcarExito(id_repartidor, {
+      // Ahora el service retorna { id_pedido, id_pago }
+      const resultado = await this.entregaService.marcarExito(id_repartidor, {
         id_pedido,
         monto_cobrado: payload.monto_cobrado,
       });
 
-      res
-        .status(200)
-        .json({ success: true, message: "Entrega registrada exitosamente" });
+      res.status(200).json({
+        success: true,
+        message: "Entrega registrada exitosamente",
+        data: resultado, // { id_pedido, id_pago }
+      });
     } catch (error: any) {
       if (error.errors) {
-        res
-          .status(400)
-          .json({
-            success: false,
-            message: error.errors.map((e: any) => e.message).join(", "),
-          });
+        res.status(400).json({
+          success: false,
+          message: error.errors.map((e: any) => e.message).join(", "),
+        });
       } else {
         res.status(400).json({ success: false, message: error.message });
       }
@@ -63,15 +64,30 @@ export class EntregaController {
         .json({ success: true, message: "Entrega marcada como fallida" });
     } catch (error: any) {
       if (error.errors) {
-        res
-          .status(400)
-          .json({
-            success: false,
-            message: error.errors.map((e: any) => e.message).join(", "),
-          });
+        res.status(400).json({
+          success: false,
+          message: error.errors.map((e: any) => e.message).join(", "),
+        });
       } else {
         res.status(400).json({ success: false, message: error.message });
       }
+    }
+  };
+
+  // ─── NUEVO ────────────────────────────────────────────────────────────────
+  obtenerComprobante = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const id_pago = Number(req.params.id_pago);
+      const id_repartidor = req.usuario!.id_empleado;
+
+      const comprobante = await this.entregaService.obtenerComprobante(
+        id_pago,
+        id_repartidor,
+      );
+
+      res.status(200).json({ success: true, data: comprobante });
+    } catch (error: any) {
+      res.status(404).json({ success: false, message: error.message });
     }
   };
 }
