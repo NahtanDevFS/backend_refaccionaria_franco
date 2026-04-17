@@ -17,6 +17,7 @@ import { crearAuthRouter } from "./routes/auth.routes";
 import { crearBodegaRouter } from "./routes/bodega.routes";
 import { crearUbicacionRouter } from "./routes/ubicacion.routes";
 import { crearEntregaRouter } from "./routes/entrega.routes";
+import { crearAdminRouter } from "./routes/admin.routes";
 
 const app = express();
 
@@ -57,6 +58,9 @@ app.use("/api/metas", crearMetaRouter(dbPool));
 app.use("/api/bodega", crearBodegaRouter(dbPool));
 app.use("/api/ubicaciones", crearUbicacionRouter(dbPool));
 app.use("/api/entregas", crearEntregaRouter(dbPool));
+
+// ── Rutas de administración — requieren token + rol ADMINISTRADOR ────────────
+app.use("/api/admin", crearAdminRouter(dbPool));
 
 const PORT = process.env.PORT || 3000;
 

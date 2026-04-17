@@ -88,7 +88,7 @@ export class AuthService {
       rol: usuario.rol,
     };
 
-    const token = jwt.sign(payload, secreto, { expiresIn: "8h" });
+    const token = jwt.sign(payload, secreto, { expiresIn: "30m" });
 
     // ── CAMBIO: el objeto `usuario` ahora incluye username y nombre_sucursal ──
     return {

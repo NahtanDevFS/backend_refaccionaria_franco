@@ -11,7 +11,7 @@ export function crearAuthRouter(dbPool: Pool): Router {
   const authService = new AuthService(dbPool);
   const authController = new AuthController(authService);
 
-  router.post("/registro", authController.registrar);
+  //router.post("/registro", authController.registrar);
   router.post("/login", authController.login);
 
   return router;
