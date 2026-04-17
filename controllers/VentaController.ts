@@ -12,14 +12,33 @@ export class VentaController {
       const page = req.query.page ? Number(req.query.page) : 1;
       const limit = req.query.limit ? Number(req.query.limit) : 20;
 
+      const rol = req.usuario!.rol;
+      const idSucToken = req.usuario!.id_sucursal;
+
+      const ROLES_GLOBALES = ["ADMINISTRADOR", "GERENTE_REGIONAL"];
+      const esGlobal = ROLES_GLOBALES.includes(rol);
+
+      // Si es rol global puede recibir ?id_sucursal=N para filtrar una sucursal
+      // concreta; si no lo pasa, verá todas. Los demás roles siempre usan la
+      // sucursal de su token.
+      let id_sucursal: number | undefined;
+      if (esGlobal) {
+        id_sucursal = req.query.id_sucursal
+          ? Number(req.query.id_sucursal)
+          : undefined; // undefined = todas
+      } else {
+        id_sucursal = idSucToken; // forzado, sin excepción
+      }
+
       const filtros = {
-        id_venta: req.query.id_venta ? Number(req.query.id_venta) : undefined, // única línea nueva
-        fechaInicio: req.query.fechaInicio as string,
-        fechaFin: req.query.fechaFin as string,
+        id_venta: req.query.id_venta ? Number(req.query.id_venta) : undefined,
+        fechaInicio: req.query.fechaInicio as string | undefined,
+        fechaFin: req.query.fechaFin as string | undefined,
         id_vendedor: req.query.id_vendedor
           ? Number(req.query.id_vendedor)
           : undefined,
-        estado: req.query.estado as string,
+        estado: req.query.estado as string | undefined,
+        id_sucursal, // ← ahora siempre presente o undefined para globales
         page,
         limit,
       };
