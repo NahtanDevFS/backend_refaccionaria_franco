@@ -72,14 +72,24 @@ export class VentaController {
 
   obtenerVentaPorId = async (req: Request, res: Response): Promise<void> => {
     try {
-      const id_venta = Number(req.params.id_venta);
+      const id_venta = Number(req.params.id);
+
+      if (!id_venta || !Number.isInteger(id_venta) || id_venta <= 0) {
+        res
+          .status(400)
+          .json({ success: false, message: "ID de venta inválido." });
+        return;
+      }
+
       const resultado = await this.ventaService.obtenerVentaPorId(id_venta);
+
       if (!resultado) {
         res
           .status(404)
           .json({ success: false, message: "Venta no encontrada" });
         return;
       }
+
       res.status(200).json({ success: true, data: resultado });
     } catch (error) {
       const errorMessage =
