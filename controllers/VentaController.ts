@@ -149,4 +149,38 @@ export class VentaController {
       res.status(500).json({ success: false, message: errorMessage });
     }
   };
+
+  obtenerHistorialDescuentos = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const id_sucursal = req.usuario!.id_sucursal;
+
+      // Rango por defecto: últimos 30 días
+      const hoy = new Date().toISOString().split("T")[0];
+      const hace30 = new Date(Date.now() - 29 * 86400000)
+        .toISOString()
+        .split("T")[0];
+
+      const desde = (req.query.desde as string) ?? hace30;
+      const hasta = (req.query.hasta as string) ?? hoy;
+      const id_vendedor = req.query.id_vendedor
+        ? Number(req.query.id_vendedor)
+        : undefined;
+
+      const data = await this.ventaService.obtenerHistorialDescuentos(
+        id_sucursal,
+        desde,
+        hasta,
+        id_vendedor,
+      );
+
+      res.status(200).json({ success: true, data });
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Error interno";
+      res.status(500).json({ success: false, message: errorMessage });
+    }
+  };
 }

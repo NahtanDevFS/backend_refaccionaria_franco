@@ -437,4 +437,70 @@ export class VentaService {
       })),
     };
   }
+
+  // ─── NUEVO: Historial completo de descuentos ─────────────────────────────
+  // Trae todas las ventas con descuento > 0 de la sucursal,
+  // incluyendo las que NO requirieron aprobación (≤5%) y las que sí.
+  async obtenerHistorialDescuentos(
+    id_sucursal: number,
+    desde?: string,
+    hasta?: string,
+    id_vendedor?: number,
+  ): Promise<any[]> {
+    const fechaDesde = desde ?? new Date().toISOString().split("T")[0];
+    const fechaHasta = hasta ?? new Date().toISOString().split("T")[0];
+
+    const values: any[] = [id_sucursal, fechaDesde, fechaHasta];
+    let filtroVendedor = "";
+
+    if (id_vendedor) {
+      values.push(id_vendedor);
+      filtroVendedor = `AND v.id_vendedor = $${values.length}`;
+    }
+
+    const query = `
+      SELECT
+        v.id_venta,
+        v.created_at                                                AS fecha,
+        v.estado,
+        v.subtotal,
+        v.descuento_monto,
+        v.total,
+        ROUND((v.descuento_monto / NULLIF(v.subtotal, 0)) * 100, 2) AS pct_descuento,
+        COALESCE(c.nombre_razon_social, 'Consumidor Final')         AS cliente,
+        COALESCE(CONCAT(ev.nombre, ' ', ev.apellido), 'Sin asignar') AS vendedor,
+        -- Si tiene supervisor = requirió aprobación formal (>5%)
+        -- Si no tiene supervisor pero descuento > 0 = fue automático (≤5%)
+        CASE
+          WHEN v.descuento_monto / NULLIF(v.subtotal, 0) > 0.05 THEN 'requirio_aprobacion'
+          ELSE 'automatico'
+        END                                                          AS tipo_descuento,
+        COALESCE(CONCAT(es.nombre, ' ', es.apellido), NULL)         AS aprobado_por
+      FROM venta v
+      LEFT JOIN cliente   c  ON v.id_cliente          = c.id_cliente
+      LEFT JOIN empleado  ev ON v.id_vendedor         = ev.id_empleado
+      LEFT JOIN empleado  es ON v.id_supervisor_autoriza = es.id_empleado
+      WHERE v.id_sucursal  = $1
+        AND v.descuento_monto > 0
+        AND DATE(v.created_at) BETWEEN $2 AND $3
+        ${filtroVendedor}
+      ORDER BY v.created_at DESC;
+    `;
+
+    const result = await this.pool.query(query, values);
+
+    return result.rows.map((row) => ({
+      id_venta: row.id_venta,
+      fecha: row.fecha,
+      estado: row.estado,
+      cliente: row.cliente,
+      vendedor: row.vendedor,
+      subtotal: Number(row.subtotal),
+      descuento_monto: Number(row.descuento_monto),
+      total: Number(row.total),
+      pct_descuento: Number(row.pct_descuento),
+      tipo_descuento: row.tipo_descuento,
+      aprobado_por: row.aprobado_por ?? null,
+    }));
+  }
 }

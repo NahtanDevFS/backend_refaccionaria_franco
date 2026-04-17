@@ -7,7 +7,6 @@ import { VentaController } from "../controllers/VentaController";
 export function crearVentaRouter(dbPool: Pool): Router {
   const router = Router();
 
-  // Inyección de dependencias simplificada (Directo al Pool)
   const ventaService = new VentaService(dbPool);
   const ventaController = new VentaController(ventaService);
 
@@ -25,7 +24,13 @@ export function crearVentaRouter(dbPool: Pool): Router {
   );
   router.post("/autorizaciones/resolver", ventaController.resolverAutorizacion);
 
-  // Rutas dinámicas (/:id) AL FINAL
+  // NUEVA ruta: historial completo de descuentos aplicados
+  router.get(
+    "/descuentos/historial",
+    ventaController.obtenerHistorialDescuentos,
+  );
+
+  // Rutas dinámicas AL FINAL para no capturar las estáticas
   router.get("/:id", ventaController.obtenerVentaPorId);
 
   return router;
