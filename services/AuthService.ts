@@ -16,7 +16,6 @@ export class AuthService {
     try {
       await client.query("BEGIN");
 
-      // 1. Insertar el usuario
       const insertUserQuery = `
         INSERT INTO usuario (id_empleado, username, password_hash)
         VALUES ($1, $2, $3)
@@ -29,7 +28,6 @@ export class AuthService {
       ]);
       const nuevoUsuario = userResult.rows[0];
 
-      // 2. Asignarle el rol
       const insertRolQuery = `
         INSERT INTO usuario_rol (id_usuario, id_rol)
         VALUES ($1, $2);
@@ -55,13 +53,21 @@ export class AuthService {
     const secreto = process.env.JWT_SECRET;
     if (!secreto) throw new Error("CONFIG ERROR: JWT_SECRET no está definido.");
 
+    // ── CAMBIO: se agrega u.username y s.nombre (sucursal) al SELECT ──────────
     const query = `
       SELECT 
-        u.id_usuario, u.password_hash, e.id_empleado, e.id_sucursal, r.nombre AS rol
+        u.id_usuario,
+        u.username,
+        u.password_hash,
+        e.id_empleado,
+        e.id_sucursal,
+        s.nombre  AS nombre_sucursal,
+        r.nombre  AS rol
       FROM usuario u
-      INNER JOIN empleado e ON u.id_empleado = e.id_empleado
-      INNER JOIN usuario_rol ur ON u.id_usuario = ur.id_usuario
-      INNER JOIN rol r ON ur.id_rol = r.id_rol
+      INNER JOIN empleado     e  ON u.id_empleado = e.id_empleado
+      INNER JOIN sucursal     s  ON e.id_sucursal  = s.id_sucursal
+      INNER JOIN usuario_rol  ur ON u.id_usuario   = ur.id_usuario
+      INNER JOIN rol          r  ON ur.id_rol       = r.id_rol
       WHERE u.username = $1 AND u.activo = true;
     `;
     const result = await this.pool.query(query, [dto.username]);
@@ -84,11 +90,16 @@ export class AuthService {
 
     const token = jwt.sign(payload, secreto, { expiresIn: "8h" });
 
+    // ── CAMBIO: el objeto `usuario` ahora incluye username y nombre_sucursal ──
     return {
       exito: true,
       mensaje: "Autenticación exitosa",
       token,
-      usuario: payload,
+      usuario: {
+        ...payload,
+        username: usuario.username,
+        nombre_sucursal: usuario.nombre_sucursal,
+      },
     };
   }
 }
