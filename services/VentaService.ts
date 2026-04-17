@@ -310,15 +310,19 @@ export class VentaService {
   async obtenerPendientesAutorizacion(id_sucursal: number): Promise<any[]> {
     const query = `
       SELECT 
-        v.id_venta, v.created_at as fecha, 
-        COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente, 
-        CONCAT(e.nombre, ' ', e.apellido) as vendedor,
-        v.subtotal, v.descuento_monto, v.total,
-        ROUND((v.descuento_monto / v.subtotal) * 100, 2) as pct_descuento
+        v.id_venta,
+        v.created_at                                            AS fecha,
+        COALESCE(c.nombre_razon_social, 'Consumidor Final')    AS cliente,
+        COALESCE(CONCAT(e.nombre, ' ', e.apellido), 'Sin vendedor') AS vendedor,
+        v.subtotal,
+        v.descuento_monto,
+        v.total,
+        ROUND((v.descuento_monto / NULLIF(v.subtotal, 0)) * 100, 2) AS pct_descuento
       FROM venta v
-      LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
-      INNER JOIN empleado e ON v.id_vendedor = e.id_empleado
-      WHERE v.id_sucursal = $1 AND v.estado = 'pendiente_autorizacion'
+      LEFT JOIN cliente   c ON v.id_cliente  = c.id_cliente
+      LEFT JOIN empleado  e ON v.id_vendedor = e.id_empleado
+      WHERE v.id_sucursal = $1
+        AND v.estado = 'pendiente_autorizacion'
       ORDER BY v.created_at ASC;
     `;
     const result = await this.pool.query(query, [id_sucursal]);
