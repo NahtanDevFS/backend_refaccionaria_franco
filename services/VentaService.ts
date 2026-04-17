@@ -15,16 +15,16 @@ export class VentaService {
     const values: any[] = [];
     let paramIndex = 1;
 
-    // ── Filtro de sucursal (NUEVO) ──────────────────────────────────────────
-    // Siempre se aplica excepto cuando viene undefined (rol global sin filtro).
+    // ── Filtro de sucursal ───────────────────────────────────────────────────
+    // Viene definido siempre para roles no globales (forzado en el controller).
+    // Para ADMINISTRADOR / GERENTE_REGIONAL viene undefined si no filtraron.
     if (filtros?.id_sucursal !== undefined) {
       baseQuery += ` AND v.id_sucursal = $${paramIndex}`;
       values.push(Number(filtros.id_sucursal));
       paramIndex++;
     }
 
-    // ── Resto de filtros ────────────────────────────────────────────────────
-    // Búsqueda directa por ID — si se provee, ignora los demás filtros
+    // ── Resto de filtros ─────────────────────────────────────────────────────
     if (filtros?.id_venta) {
       baseQuery += ` AND v.id_venta = $${paramIndex}`;
       values.push(Number(filtros.id_venta));
@@ -62,16 +62,16 @@ export class VentaService {
       `
       SELECT
         v.id_venta,
-        v.created_at  AS fecha,
-        COALESCE(c.nombre_razon_social, 'Consumidor Final') AS cliente,
-        CONCAT(e.nombre, ' ', e.apellido)                   AS vendedor,
+        v.created_at as fecha,
+        COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente,
+        CONCAT(e.nombre, ' ', e.apellido) as vendedor,
         v.canal,
         v.subtotal,
-        v.descuento_monto AS descuento,
+        v.descuento_monto as descuento,
         v.monto_iva,
         v.total,
         v.estado
-      ` + baseQuery;
+    ` + baseQuery;
 
     dataQuery += ` ORDER BY v.created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1};`;
     const dataValues = [...values, limit, offset];

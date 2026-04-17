@@ -4,6 +4,8 @@ import { VentaService } from "../services/VentaService";
 import { crearVentaSchema } from "../schemas/venta.schema";
 import { ZodError } from "zod";
 
+const ROLES_GLOBALES = ["ADMINISTRADOR", "GERENTE_REGIONAL"];
+
 export class VentaController {
   constructor(private readonly ventaService: VentaService) {}
 
@@ -12,22 +14,27 @@ export class VentaController {
       const page = req.query.page ? Number(req.query.page) : 1;
       const limit = req.query.limit ? Number(req.query.limit) : 20;
 
+      console.log("ROL:", req.usuario?.rol);
+      console.log("ID_SUCURSAL:", req.usuario?.id_sucursal);
+      console.log(
+        "ES_GLOBAL:",
+        ROLES_GLOBALES.includes(req.usuario?.rol as string),
+      );
+
       const rol = req.usuario!.rol;
       const idSucToken = req.usuario!.id_sucursal;
-
-      const ROLES_GLOBALES = ["ADMINISTRADOR", "GERENTE_REGIONAL"];
       const esGlobal = ROLES_GLOBALES.includes(rol);
 
-      // Si es rol global puede recibir ?id_sucursal=N para filtrar una sucursal
-      // concreta; si no lo pasa, verá todas. Los demás roles siempre usan la
-      // sucursal de su token.
+      // Roles globales pueden pasar ?id_sucursal=N para filtrar,
+      // o no pasarlo para ver todas.
+      // Cualquier otro rol: se fuerza su propia sucursal del token.
       let id_sucursal: number | undefined;
       if (esGlobal) {
         id_sucursal = req.query.id_sucursal
           ? Number(req.query.id_sucursal)
-          : undefined; // undefined = todas
+          : undefined;
       } else {
-        id_sucursal = idSucToken; // forzado, sin excepción
+        id_sucursal = idSucToken;
       }
 
       const filtros = {
@@ -38,7 +45,7 @@ export class VentaController {
           ? Number(req.query.id_vendedor)
           : undefined,
         estado: req.query.estado as string | undefined,
-        id_sucursal, // ← ahora siempre presente o undefined para globales
+        id_sucursal,
         page,
         limit,
       };
@@ -101,14 +108,12 @@ export class VentaController {
       }
 
       const resultado = await this.ventaService.obtenerVentaPorId(id_venta);
-
       if (!resultado) {
         res
           .status(404)
           .json({ success: false, message: "Venta no encontrada" });
         return;
       }
-
       res.status(200).json({ success: true, data: resultado });
     } catch (error) {
       const errorMessage =
@@ -176,7 +181,6 @@ export class VentaController {
     try {
       const id_sucursal = req.usuario!.id_sucursal;
 
-      // Rango por defecto: últimos 30 días
       const hoy = new Date().toISOString().split("T")[0];
       const hace30 = new Date(Date.now() - 29 * 86400000)
         .toISOString()
