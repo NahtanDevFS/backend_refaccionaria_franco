@@ -18,7 +18,7 @@ export class VentaController {
       const idSucToken = req.usuario!.id_sucursal;
       const esGlobal = ROLES_GLOBALES.includes(rol);
 
-      // Roles globales pueden pasar ?id_sucursal=N para filtrar,
+      // Roles globales pueden pasar ?id_sucursal=N para filtrar
       // o no pasarlo para ver todas.
       // Cualquier otro rol: se fuerza su propia sucursal del token.
       let id_sucursal: number | undefined;
