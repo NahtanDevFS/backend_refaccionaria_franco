@@ -157,7 +157,7 @@ export class ArqueoService {
 
     // Resumen del período
     const totalArqueos = filas.length;
-    const cuadrados = filas.filter((f) => f.estado === "cuadra").length;
+    const cuadrados = filas.filter((f) => f.estado === "cuadrado").length;
     const conDiferencia = filas.filter(
       (f) => f.estado === "con_diferencia",
     ).length;
