@@ -22,10 +22,11 @@ export function crearCajaRouter(dbPool: Pool): Router {
   router.get("/repartidores/pendientes", controller.obtenerCobrosRepartidores);
   router.post("/repartidores/liquidar", controller.liquidarRepartidor);
 
-  // Arqueo
+  // Arqueo — orden importa: rutas estáticas antes de dinámicas
   router.post("/arqueo", controller.registrarArqueo);
   router.get("/arqueos", controller.obtenerHistorialArqueos);
   router.get("/arqueos/cajeros", controller.obtenerCajeros);
+  router.patch("/arqueos/:id/verificar", controller.verificarArqueo);
 
   return router;
 }

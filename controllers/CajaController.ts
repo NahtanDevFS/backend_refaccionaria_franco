@@ -8,6 +8,12 @@ import {
 } from "../schemas/caja.schema";
 import { z } from "zod";
 
+const ROLES_SUPERVISOR = [
+  "ADMINISTRADOR",
+  "GERENTE_REGIONAL",
+  "SUPERVISOR_SUCURSAL",
+];
+
 const liquidarSchema = z.object({
   id_repartidor: z.number().int().positive(),
   id_pagos: z.array(z.number().int().positive()).min(1),
@@ -40,10 +46,12 @@ export class CajaController {
       });
     } catch (error: any) {
       if (error.errors) {
-        res.status(400).json({
-          success: false,
-          message: error.errors.map((e: any) => e.message).join(", "),
-        });
+        res
+          .status(400)
+          .json({
+            success: false,
+            message: error.errors.map((e: any) => e.message).join(", "),
+          });
       } else {
         res.status(400).json({ success: false, message: error.message });
       }
@@ -60,7 +68,78 @@ export class CajaController {
     }
   };
 
-  // ── Cobros de repartidores pendientes de liquidar ─────────────────────────
+  // ── Registro de arqueo — SIN supervisor (se asigna después si hay diferencia)
+  registrarArqueo = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const payload = registrarArqueoSchema.parse(req.body);
+      const resultado = await this.arqueoService.procesarCierreDeCaja({
+        ...payload,
+        id_sucursal: req.usuario!.id_sucursal,
+        id_cajero: req.usuario!.id_empleado,
+        // id_supervisor_verifica no se pasa — queda NULL en BD
+      });
+      res.status(201).json({
+        success: true,
+        message: resultado.mensaje,
+        data: { id_arqueo: resultado.data.id_arqueo },
+      });
+    } catch (error: any) {
+      if (error.errors) {
+        res
+          .status(400)
+          .json({
+            success: false,
+            message: error.errors.map((e: any) => e.message).join(", "),
+          });
+      } else {
+        res.status(400).json({ success: false, message: error.message });
+      }
+    }
+  };
+
+  // ── Verificar arqueo con diferencia (solo supervisor/admin) ───────────────
+  verificarArqueo = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const rol = req.usuario!.rol;
+      if (!ROLES_SUPERVISOR.includes(rol)) {
+        res
+          .status(403)
+          .json({
+            success: false,
+            message:
+              "Solo supervisores o administradores pueden verificar arqueos.",
+          });
+        return;
+      }
+
+      const id_arqueo = Number(req.params.id);
+      const id_supervisor = req.usuario!.id_empleado;
+      const id_sucursal = req.usuario!.id_sucursal;
+
+      if (!id_arqueo || isNaN(id_arqueo)) {
+        res
+          .status(400)
+          .json({ success: false, message: "ID de arqueo inválido." });
+        return;
+      }
+
+      const data = await this.arqueoService.verificarArqueo(
+        id_arqueo,
+        id_supervisor,
+        id_sucursal,
+      );
+
+      res.status(200).json({
+        success: true,
+        message: "Arqueo verificado correctamente.",
+        data,
+      });
+    } catch (error: any) {
+      res.status(400).json({ success: false, message: error.message });
+    }
+  };
+
+  // ── Cobros de repartidores pendientes ─────────────────────────────────────
   obtenerCobrosRepartidores = async (
     req: Request,
     res: Response,
@@ -96,37 +175,12 @@ export class CajaController {
       });
     } catch (error: any) {
       if (error.errors) {
-        res.status(400).json({
-          success: false,
-          message: error.errors.map((e: any) => e.message).join(", "),
-        });
-      } else {
-        res.status(400).json({ success: false, message: error.message });
-      }
-    }
-  };
-
-  // ── Registro de arqueo ────────────────────────────────────────────────────
-  registrarArqueo = async (req: Request, res: Response): Promise<void> => {
-    try {
-      const payload = registrarArqueoSchema.parse(req.body);
-      const resultado = await this.arqueoService.procesarCierreDeCaja({
-        ...payload,
-        id_sucursal: req.usuario!.id_sucursal,
-        id_cajero: req.usuario!.id_empleado,
-        id_supervisor_verifica: req.usuario!.id_empleado,
-      });
-      res.status(201).json({
-        success: true,
-        message: resultado.mensaje,
-        data: { id_arqueo: resultado.data.id_arqueo },
-      });
-    } catch (error: any) {
-      if (error.errors) {
-        res.status(400).json({
-          success: false,
-          message: error.errors.map((e: any) => e.message).join(", "),
-        });
+        res
+          .status(400)
+          .json({
+            success: false,
+            message: error.errors.map((e: any) => e.message).join(", "),
+          });
       } else {
         res.status(400).json({ success: false, message: error.message });
       }
@@ -137,10 +191,7 @@ export class CajaController {
   obtenerHistorial = async (req: Request, res: Response): Promise<void> => {
     try {
       const id_sucursal = req.usuario!.id_sucursal;
-      const { desde, hasta } = req.query as {
-        desde?: string;
-        hasta?: string;
-      };
+      const { desde, hasta } = req.query as { desde?: string; hasta?: string };
       const data = await this.cajaService.obtenerHistorial(
         id_sucursal,
         desde,
@@ -181,7 +232,6 @@ export class CajaController {
         hasta,
         id_cajero_filtro,
       });
-
       res.status(200).json({ success: true, data });
     } catch (error: any) {
       res.status(500).json({ success: false, message: error.message });
