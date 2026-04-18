@@ -170,7 +170,11 @@ export class ArqueoService {
          ac.id_cajero,
          ac.id_supervisor_verifica,
          CONCAT(ec.nombre, ' ', ec.apellido)  AS cajero,
-         CONCAT(es.nombre, ' ', es.apellido)  AS supervisor_verifica
+         CASE
+          WHEN es.id_empleado IS NOT NULL
+          THEN CONCAT(es.nombre, ' ', es.apellido)
+          ELSE NULL
+        END AS supervisor_verifica
        FROM arqueo_caja ac
        INNER JOIN empleado ec ON ac.id_cajero              = ec.id_empleado
        LEFT  JOIN empleado es ON ac.id_supervisor_verifica = es.id_empleado

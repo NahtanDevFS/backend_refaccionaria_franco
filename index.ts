@@ -24,7 +24,7 @@ const app = express();
 app.use(
   cors({
     origin: "http://localhost:3001", // Permite solo a tu frontend de Next.js
-    methods: ["GET", "POST", "PUT", "DELETE"],
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
     allowedHeaders: ["Content-Type", "Authorization"], // Vital si usas verificarToken
   }),
 );
