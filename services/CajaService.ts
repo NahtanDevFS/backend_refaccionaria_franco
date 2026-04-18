@@ -6,17 +6,17 @@ export class CajaService {
   constructor(private readonly pool: Pool) {}
 
   async obtenerPendientes(id_sucursal: number) {
-    const query = `
-      SELECT 
-        v.id_venta, v.estado, v.total, v.pago_contra_entrega, v.created_at,
-        COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente
-      FROM venta v
-      LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
-      WHERE v.id_sucursal = $1 
-        AND v.estado IN ('pendiente_pago', 'pendiente_cobro_contra_entrega')
-      ORDER BY v.created_at ASC;
-    `;
-    const result = await this.pool.query(query, [id_sucursal]);
+    const result = await this.pool.query(
+      `SELECT
+         v.id_venta, v.estado, v.total, v.pago_contra_entrega, v.created_at,
+         COALESCE(c.nombre_razon_social, 'Consumidor Final') AS cliente
+       FROM venta v
+       LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
+       WHERE v.id_sucursal = $1
+         AND v.estado IN ('pendiente_pago', 'pendiente_cobro_contra_entrega')
+       ORDER BY v.created_at ASC`,
+      [id_sucursal],
+    );
     return result.rows.map((row) => ({ ...row, total: Number(row.total) }));
   }
 
@@ -29,7 +29,6 @@ export class CajaService {
         "SELECT estado, total FROM venta WHERE id_venta = $1 FOR UPDATE",
         [data.id_venta],
       );
-
       if (ventaRes.rows.length === 0) throw new Error("Venta no encontrada");
       const venta = ventaRes.rows[0];
 
@@ -51,7 +50,6 @@ export class CajaService {
           data.referencia,
         ],
       );
-
       await client.query(
         `UPDATE venta SET estado = 'pagada', updated_at = NOW() WHERE id_venta = $1`,
         [data.id_venta],
@@ -66,9 +64,14 @@ export class CajaService {
     }
   }
 
+  // ── Resumen del día para el arqueo ────────────────────────────────────────
+  // Incluye:
+  //   a) cobros directos del cajero (id_cajero = este cajero)
+  //   b) cobros de repartidores ya liquidados con este cajero (id_cajero se
+  //      actualizó en la liquidación)
   async obtenerResumenDia(id_cajero: number) {
     const result = await this.pool.query(
-      `SELECT metodo_pago, COALESCE(SUM(monto), 0) as total
+      `SELECT metodo_pago, COALESCE(SUM(monto), 0) AS total
        FROM pago
        WHERE id_cajero = $1
          AND DATE(fecha_pago) = CURRENT_DATE
@@ -82,25 +85,130 @@ export class CajaService {
     }));
   }
 
-  // ─── Historial de cobros (pagos individuales para facturación) ────────────
+  // ── Cobros de repartidores pendientes de liquidar ─────────────────────────
+  // Pagos con id_cajero IS NULL (cobrado por repartidor, aún no entregado al cajero)
+  // filtrados por sucursal del cajero para que solo vea los de su sede.
+  async obtenerCobrosRepartidoresPendientes(id_sucursal: number) {
+    const result = await this.pool.query(
+      `SELECT
+         p.id_pago,
+         p.id_venta,
+         p.id_repartidor,
+         p.monto,
+         p.fecha_pago,
+         CONCAT(er.nombre, ' ', er.apellido)                    AS repartidor,
+         COALESCE(c.nombre_razon_social, 'Consumidor Final')    AS cliente,
+         pd.direccion_entrega
+       FROM pago p
+       JOIN venta       v  ON p.id_venta      = v.id_venta
+       JOIN empleado    er ON p.id_repartidor  = er.id_empleado
+       LEFT JOIN cliente c ON v.id_cliente    = c.id_cliente
+       LEFT JOIN pedido_domicilio pd ON pd.id_venta = v.id_venta
+       WHERE p.id_cajero IS NULL
+         AND p.id_repartidor IS NOT NULL
+         AND v.id_sucursal = $1
+       ORDER BY p.fecha_pago ASC`,
+      [id_sucursal],
+    );
+    return result.rows.map((r) => ({
+      id_pago: r.id_pago,
+      id_venta: r.id_venta,
+      id_repartidor: r.id_repartidor,
+      monto: Number(r.monto),
+      fecha_pago: r.fecha_pago,
+      repartidor: r.repartidor,
+      cliente: r.cliente,
+      direccion_entrega: r.direccion_entrega,
+    }));
+  }
+
+  // ── Liquidar cobros de un repartidor ──────────────────────────────────────
+  // El cajero confirma que recibió el efectivo del repartidor.
+  // Se actualiza id_cajero en todos los pagos seleccionados.
+  async liquidarRepartidor(
+    id_cajero: number,
+    id_repartidor: number,
+    id_pagos: number[],
+    id_sucursal: number,
+  ) {
+    if (!id_pagos.length) throw new Error("No se especificaron pagos.");
+
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      // Verificar que todos los pagos pertenezcan a la sucursal correcta
+      // y estén aún sin cajero
+      const check = await client.query(
+        `SELECT COUNT(*) AS total
+         FROM pago p
+         JOIN venta v ON p.id_venta = v.id_venta
+         WHERE p.id_pago = ANY($1::int[])
+           AND p.id_repartidor = $2
+           AND p.id_cajero IS NULL
+           AND v.id_sucursal = $3`,
+        [id_pagos, id_repartidor, id_sucursal],
+      );
+
+      if (Number(check.rows[0].total) !== id_pagos.length)
+        throw new Error(
+          "Uno o más pagos no son válidos para liquidar (ya liquidados, de otro repartidor o de otra sucursal).",
+        );
+
+      // Asignar el cajero que recibe el efectivo
+      await client.query(
+        `UPDATE pago
+         SET id_cajero = $1
+         WHERE id_pago = ANY($2::int[])`,
+        [id_cajero, id_pagos],
+      );
+
+      // Calcular total liquidado para retornarlo
+      const totalRes = await client.query(
+        `SELECT COALESCE(SUM(monto), 0) AS total
+         FROM pago WHERE id_pago = ANY($1::int[])`,
+        [id_pagos],
+      );
+
+      await client.query("COMMIT");
+
+      return {
+        pagos_liquidados: id_pagos.length,
+        total_recibido: Number(totalRes.rows[0].total),
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // ── Historial de cobros (pagos) ───────────────────────────────────────────
   async obtenerHistorial(id_sucursal: number, desde?: string, hasta?: string) {
     const fechaDesde = desde ?? new Date().toISOString().split("T")[0];
     const fechaHasta = hasta ?? new Date().toISOString().split("T")[0];
 
     const resPagos = await this.pool.query(
       `SELECT
-         p.id_pago, p.id_venta, p.fecha_pago, p.metodo_pago, p.monto, p.referencia,
+         p.id_pago, p.id_venta, p.fecha_pago, p.metodo_pago,
+         p.monto, p.referencia,
+         p.id_cajero, p.id_repartidor,
          COALESCE(c.nombre_razon_social, 'Consumidor Final') AS cliente,
          COALESCE(c.nit, 'CF')                               AS nit,
          c.direccion                                          AS direccion_cliente,
-         CONCAT(e.nombre, ' ', e.apellido)                   AS cajero,
+         -- Cajero: quien cobró directamente o quien liquidó el cobro del repartidor
+         CONCAT(ec.nombre, ' ', ec.apellido)                 AS cajero,
+         -- Repartidor: quien cobró en ruta (puede ser null)
+         CONCAT(er.nombre, ' ', er.apellido)                 AS repartidor,
          v.subtotal,
          COALESCE(v.descuento_monto, 0)                      AS descuento_monto,
          v.total
        FROM pago p
-       JOIN venta   v ON p.id_venta   = v.id_venta
-       LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
-       JOIN empleado e ON p.id_cajero  = e.id_empleado
+       JOIN venta v ON p.id_venta = v.id_venta
+       LEFT JOIN cliente   c  ON v.id_cliente    = c.id_cliente
+       LEFT JOIN empleado  ec ON p.id_cajero     = ec.id_empleado
+       LEFT JOIN empleado  er ON p.id_repartidor = er.id_empleado
        WHERE v.id_sucursal = $1
          AND DATE(p.fecha_pago) BETWEEN $2 AND $3
        ORDER BY p.fecha_pago DESC`,
@@ -110,14 +218,13 @@ export class CajaService {
     if (resPagos.rows.length === 0) return [];
 
     const idVentas = resPagos.rows.map((r) => r.id_venta);
-
     const resDetalles = await this.pool.query(
       `SELECT
          dv.id_venta, dv.id_producto,
-         p.nombre AS producto, p.sku,
+         pr.nombre AS producto, pr.sku,
          dv.cantidad, dv.precio_unitario, dv.subtotal_linea, dv.monto_iva
        FROM detalle_venta dv
-       JOIN producto p ON dv.id_producto = p.id_producto
+       JOIN producto pr ON dv.id_producto = pr.id_producto
        WHERE dv.id_venta = ANY($1::int[])`,
       [idVentas],
     );
@@ -146,7 +253,10 @@ export class CajaService {
       cliente: r.cliente,
       nit: r.nit,
       direccion_cliente: r.direccion_cliente ?? null,
-      cajero: r.cajero,
+      // Si hubo repartidor: mostrar su nombre + indicador
+      cajero: r.cajero ?? null,
+      repartidor: r.repartidor ?? null,
+      es_cobro_ruta: !!r.id_repartidor,
       subtotal: Number(r.subtotal),
       descuento_monto: Number(r.descuento_monto),
       total: Number(r.total),

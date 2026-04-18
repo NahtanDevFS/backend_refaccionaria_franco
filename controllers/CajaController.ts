@@ -6,6 +6,12 @@ import {
   registrarPagoSchema,
   registrarArqueoSchema,
 } from "../schemas/caja.schema";
+import { z } from "zod";
+
+const liquidarSchema = z.object({
+  id_repartidor: z.number().int().positive(),
+  id_pagos: z.array(z.number().int().positive()).min(1),
+});
 
 export class CajaController {
   constructor(
@@ -16,8 +22,8 @@ export class CajaController {
   obtenerPendientes = async (req: Request, res: Response): Promise<void> => {
     try {
       const id_sucursal = req.usuario!.id_sucursal;
-      const pendientes = await this.cajaService.obtenerPendientes(id_sucursal);
-      res.status(200).json({ success: true, data: pendientes });
+      const data = await this.cajaService.obtenerPendientes(id_sucursal);
+      res.status(200).json({ success: true, data });
     } catch (error: any) {
       res.status(500).json({ success: false, message: error.message });
     }
@@ -47,25 +53,69 @@ export class CajaController {
   obtenerResumen = async (req: Request, res: Response): Promise<void> => {
     try {
       const id_cajero = req.usuario!.id_empleado;
-      const resumen = await this.cajaService.obtenerResumenDia(id_cajero);
-      res.status(200).json({ success: true, data: resumen });
+      const data = await this.cajaService.obtenerResumenDia(id_cajero);
+      res.status(200).json({ success: true, data });
     } catch (error: any) {
       res.status(500).json({ success: false, message: error.message });
     }
   };
 
-  // ── Registro de arqueo — ahora delega en ArqueoService (canónico) ────────
+  // ── Cobros de repartidores pendientes de liquidar ─────────────────────────
+  obtenerCobrosRepartidores = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const id_sucursal = req.usuario!.id_sucursal;
+      const data =
+        await this.cajaService.obtenerCobrosRepartidoresPendientes(id_sucursal);
+      res.status(200).json({ success: true, data });
+    } catch (error: any) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  };
+
+  // ── Liquidar cobros de un repartidor ──────────────────────────────────────
+  liquidarRepartidor = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const id_cajero = req.usuario!.id_empleado;
+      const id_sucursal = req.usuario!.id_sucursal;
+      const payload = liquidarSchema.parse(req.body);
+
+      const resultado = await this.cajaService.liquidarRepartidor(
+        id_cajero,
+        payload.id_repartidor,
+        payload.id_pagos,
+        id_sucursal,
+      );
+
+      res.status(200).json({
+        success: true,
+        message: `Liquidación registrada. Se recibieron Q${resultado.total_recibido.toFixed(2)} de ${resultado.pagos_liquidados} cobro(s).`,
+        data: resultado,
+      });
+    } catch (error: any) {
+      if (error.errors) {
+        res.status(400).json({
+          success: false,
+          message: error.errors.map((e: any) => e.message).join(", "),
+        });
+      } else {
+        res.status(400).json({ success: false, message: error.message });
+      }
+    }
+  };
+
+  // ── Registro de arqueo ────────────────────────────────────────────────────
   registrarArqueo = async (req: Request, res: Response): Promise<void> => {
     try {
       const payload = registrarArqueoSchema.parse(req.body);
-
       const resultado = await this.arqueoService.procesarCierreDeCaja({
         ...payload,
         id_sucursal: req.usuario!.id_sucursal,
         id_cajero: req.usuario!.id_empleado,
         id_supervisor_verifica: req.usuario!.id_empleado,
       });
-
       res.status(201).json({
         success: true,
         message: resultado.mensaje,
@@ -83,23 +133,26 @@ export class CajaController {
     }
   };
 
-  // ── Historial de cobros (pagos individuales) ─────────────────────────────
+  // ── Historial de cobros ───────────────────────────────────────────────────
   obtenerHistorial = async (req: Request, res: Response): Promise<void> => {
     try {
       const id_sucursal = req.usuario!.id_sucursal;
-      const { desde, hasta } = req.query as { desde?: string; hasta?: string };
-      const historial = await this.cajaService.obtenerHistorial(
+      const { desde, hasta } = req.query as {
+        desde?: string;
+        hasta?: string;
+      };
+      const data = await this.cajaService.obtenerHistorial(
         id_sucursal,
         desde,
         hasta,
       );
-      res.status(200).json({ success: true, data: historial });
+      res.status(200).json({ success: true, data });
     } catch (error: any) {
       res.status(500).json({ success: false, message: error.message });
     }
   };
 
-  // ── Historial de arqueos (cierres de caja) ───────────────────────────────
+  // ── Historial de arqueos ──────────────────────────────────────────────────
   obtenerHistorialArqueos = async (
     req: Request,
     res: Response,
@@ -135,13 +188,12 @@ export class CajaController {
     }
   };
 
-  // ── Cajeros de la sucursal (para el selector del supervisor) ─────────────
   obtenerCajeros = async (req: Request, res: Response): Promise<void> => {
     try {
       const id_sucursal = req.usuario!.id_sucursal;
-      const cajeros =
+      const data =
         await this.arqueoService.obtenerCajerosDeSucursal(id_sucursal);
-      res.status(200).json({ success: true, data: cajeros });
+      res.status(200).json({ success: true, data });
     } catch (error: any) {
       res.status(500).json({ success: false, message: error.message });
     }

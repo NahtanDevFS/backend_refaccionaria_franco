@@ -8,16 +8,19 @@ import { CajaController } from "../controllers/CajaController";
 export function crearCajaRouter(dbPool: Pool): Router {
   const router = Router();
 
-  // CajaController ahora recibe ambos servicios
   const cajaService = new CajaService(dbPool);
   const arqueoService = new ArqueoService(dbPool);
   const controller = new CajaController(cajaService, arqueoService);
 
-  // Cobros
+  // Cobros de mostrador
   router.get("/pendientes", controller.obtenerPendientes);
   router.post("/cobrar", controller.cobrar);
   router.get("/resumen", controller.obtenerResumen);
   router.get("/historial", controller.obtenerHistorial);
+
+  // Liquidación de repartidores
+  router.get("/repartidores/pendientes", controller.obtenerCobrosRepartidores);
+  router.post("/repartidores/liquidar", controller.liquidarRepartidor);
 
   // Arqueo
   router.post("/arqueo", controller.registrarArqueo);

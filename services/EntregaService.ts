@@ -10,10 +10,14 @@ export class EntregaService {
   async obtenerMisPedidos(id_repartidor: number) {
     const query = `
       SELECT 
-        pd.id_pedido, pd.id_venta, pd.direccion_entrega, pd.estado as estado_pedido, 
-        pd.nombre_contacto, pd.telefono_contacto, v.total, v.pago_contra_entrega,
+        pd.id_pedido, pd.id_venta, pd.direccion_entrega,
+        pd.estado AS estado_pedido,
+        pd.nombre_contacto, pd.telefono_contacto,
+        v.total, v.pago_contra_entrega,
         (SELECT json_agg(json_build_object('producto', p.nombre, 'cantidad', dv.cantidad))
-         FROM detalle_venta dv JOIN producto p ON dv.id_producto = p.id_producto WHERE dv.id_venta = v.id_venta) as productos
+         FROM detalle_venta dv
+         JOIN producto p ON dv.id_producto = p.id_producto
+         WHERE dv.id_venta = v.id_venta) AS productos
       FROM pedido_domicilio pd
       JOIN venta v ON pd.id_venta = v.id_venta
       WHERE pd.id_repartidor = $1 AND pd.estado = 'pendiente'
@@ -23,20 +27,18 @@ export class EntregaService {
     return result.rows.map((row) => ({ ...row, total: Number(row.total) }));
   }
 
-  async marcarExito(
-    id_repartidor: number,
-    data: MarcarEntregaExitosaDTO,
-  ): Promise<{ id_pedido: number; id_pago: number | null }> {
+  async marcarExito(id_repartidor: number, data: MarcarEntregaExitosaDTO) {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
 
       const pedidoRes = await client.query(
-        `
-        SELECT pd.id_venta, pd.estado, v.pago_contra_entrega, v.total 
-        FROM pedido_domicilio pd JOIN venta v ON pd.id_venta = v.id_venta
-        WHERE pd.id_pedido = $1 AND pd.id_repartidor = $2 FOR UPDATE
-      `,
+        `SELECT pd.id_venta, pd.estado, v.pago_contra_entrega, v.total,
+                v.id_sucursal
+         FROM pedido_domicilio pd
+         JOIN venta v ON pd.id_venta = v.id_venta
+         WHERE pd.id_pedido = $1 AND pd.id_repartidor = $2
+         FOR UPDATE`,
         [data.id_pedido, id_repartidor],
       );
 
@@ -44,11 +46,11 @@ export class EntregaService {
         throw new Error(
           "Pedido no encontrado o no asignado a este repartidor.",
         );
+
       const pedido = pedidoRes.rows[0];
+
       if (pedido.estado !== "pendiente")
         throw new Error("El pedido ya fue procesado previamente.");
-
-      let id_pago: number | null = null;
 
       if (pedido.pago_contra_entrega) {
         if (
@@ -59,32 +61,36 @@ export class EntregaService {
             `Debe registrar el cobro completo. El total es Q${pedido.total}`,
           );
         }
+
+        // ── CORRECCIÓN CLAVE ──────────────────────────────────────────────
+        // id_cajero = NULL  → pendiente de liquidar con el cajero
+        // id_repartidor     → quien cobró en ruta
+        // La venta queda como 'pagada' porque el dinero ya fue cobrado,
+        // pero el pago queda sin id_cajero hasta que el cajero lo liquide.
         await client.query(
-          `UPDATE venta SET estado = 'pagada', updated_at = NOW() WHERE id_venta = $1`,
+          `UPDATE venta SET estado = 'pagada', updated_at = NOW()
+           WHERE id_venta = $1`,
           [pedido.id_venta],
         );
-        const pagoRes = await client.query(
-          `
-          INSERT INTO pago (id_venta, id_cajero, metodo_pago, monto, referencia)
-          VALUES ($1, $2, 'efectivo', $3, 'Cobro en ruta por repartidor')
-          RETURNING id_pago
-        `,
+
+        await client.query(
+          `INSERT INTO pago
+             (id_venta, id_cajero, id_repartidor, metodo_pago, monto, referencia)
+           VALUES ($1, NULL, $2, 'efectivo', $3, 'Cobro en ruta por repartidor')`,
           [pedido.id_venta, id_repartidor, data.monto_cobrado],
         );
-        id_pago = pagoRes.rows[0].id_pago;
       }
 
       await client.query(
-        `
-        UPDATE pedido_domicilio 
-        SET estado = 'entregado', fecha_entrega = NOW(), monto_cobrado_contra_entrega = $1 
-        WHERE id_pedido = $2
-      `,
+        `UPDATE pedido_domicilio
+         SET estado = 'entregado',
+             fecha_entrega = NOW(),
+             monto_cobrado_contra_entrega = $1
+         WHERE id_pedido = $2`,
         [data.monto_cobrado || 0, data.id_pedido],
       );
 
       await client.query("COMMIT");
-      return { id_pedido: data.id_pedido, id_pago };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -94,20 +100,19 @@ export class EntregaService {
   }
 
   async marcarFallida(id_repartidor: number, data: MarcarEntregaFallidaDTO) {
-    const query = `
-      UPDATE pedido_domicilio SET estado = 'fallido', motivo_fallido = $1
-      WHERE id_pedido = $2 AND id_repartidor = $3 AND estado = 'pendiente' RETURNING id_pedido;
-    `;
-    const res = await this.pool.query(query, [
-      data.motivo_fallido,
-      data.id_pedido,
-      id_repartidor,
-    ]);
-    if (res.rows.length === 0) {
+    const result = await this.pool.query(
+      `UPDATE pedido_domicilio
+       SET estado = 'fallido', motivo_fallido = $1
+       WHERE id_pedido = $2
+         AND id_repartidor = $3
+         AND estado = 'pendiente'
+       RETURNING id_pedido`,
+      [data.motivo_fallido, data.id_pedido, id_repartidor],
+    );
+    if (result.rows.length === 0)
       throw new Error(
         "Pedido no encontrado, no asignado a este repartidor o ya procesado.",
       );
-    }
   }
 
   async obtenerComprobante(id_pago: number, id_repartidor: number) {
