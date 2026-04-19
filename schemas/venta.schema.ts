@@ -17,10 +17,10 @@ export const crearVentaSchema = z
           .string()
           .email("Correo electrónico inválido")
           .optional()
-          .or(z.literal("")), // <-- NUEVO
+          .or(z.literal("")),
         direccion: z.string().optional(),
         id_municipio: z.number().optional(),
-        notas_internas: z.string().optional(), // <-- NUEVO
+        notas_internas: z.string().optional(),
       })
       .nullable()
       .optional(),
@@ -31,6 +31,7 @@ export const crearVentaSchema = z
     direccion_entrega: z.string().nullable().optional(),
     nombre_contacto: z.string().nullable().optional(),
     telefono_contacto: z.string().nullable().optional(),
+    id_municipio_entrega: z.number().nullable().optional(),
     detalles: z
       .array(
         z.object({

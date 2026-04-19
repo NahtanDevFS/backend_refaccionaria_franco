@@ -25,6 +25,7 @@ export interface CrearVentaDTO {
   direccion_entrega?: string | null;
   nombre_contacto?: string | null;
   telefono_contacto?: string | null;
+  id_municipio_entrega?: number | null;
   descuento_porcentaje?: number;
   detalles: DetalleOrdenDTO[];
 }

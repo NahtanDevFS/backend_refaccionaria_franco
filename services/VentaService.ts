@@ -273,27 +273,27 @@ export class VentaService {
       //    telefono_contacto ni direccion_entrega. Ahora inserta en
       //    la tabla destinatario y luego referencia id_destinatario.
       if (data.canal === "domicilio" && data.direccion_entrega) {
-        // Insertar destinatario primero
+        // 1. Crear el destinatario con municipio si viene
         const destRes = await client.query(
-          `INSERT INTO destinatario 
-             (id_cliente, nombre, telefono, direccion_texto)
+          `INSERT INTO destinatario
+             (nombre, telefono, direccion_texto, id_municipio)
            VALUES ($1, $2, $3, $4)
            RETURNING id_destinatario`,
           [
-            id_cliente, // puede ser null si es CF
-            data.nombre_contacto || null,
-            data.telefono_contacto || null,
+            data.nombre_contacto ?? null,
+            data.telefono_contacto ?? null,
             data.direccion_entrega,
+            data.id_municipio_entrega ?? null, // ← nuevo campo del payload
           ],
         );
         const id_destinatario = destRes.rows[0].id_destinatario;
 
-        // Insertar pedido referenciando el destinatario
+        // 2. Crear el pedido referenciando el destinatario
         await client.query(
-          `INSERT INTO pedido_domicilio 
-             (id_venta, id_repartidor, id_destinatario, estado)
-           VALUES ($1, $2, $3, 'pendiente')`,
-          [id_venta, data.id_repartidor || null, id_destinatario],
+          `INSERT INTO pedido_domicilio
+             (id_venta, id_repartidor, estado, id_destinatario)
+           VALUES ($1, $2, 'pendiente', $3)`,
+          [id_venta, data.id_repartidor, id_destinatario],
         );
       }
 

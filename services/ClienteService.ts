@@ -17,9 +17,31 @@ export class ClienteService {
       }
     }
 
+    if (dto.telefono && dto.telefono.trim() !== "") {
+      // Solo dígitos, exactamente 8
+      const soloDigitos = dto.telefono.replace(/\D/g, "");
+      if (soloDigitos.length !== 8) {
+        throw new Error("El teléfono debe tener exactamente 8 dígitos.");
+      }
+
+      //no puede existir otro cliente con el mismo teléfono
+      const telRes = await this.pool.query(
+        `SELECT id_cliente FROM cliente WHERE telefono = $1`,
+        [soloDigitos],
+      );
+      if (telRes.rows.length > 0) {
+        throw new Error(
+          `Ya existe un cliente registrado con el teléfono ${soloDigitos}.`,
+        );
+      }
+
+      // Guardamos siempre el teléfono como 8 dígitos limpios
+      dto.telefono = soloDigitos;
+    }
+
     const query = `
       INSERT INTO cliente (
-        nombre_razon_social, nit, tipo_cliente, telefono, 
+        nombre_razon_social, nit, tipo_cliente, telefono,
         email, direccion, id_municipio, notas_internas, created_at
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
       RETURNING *;
