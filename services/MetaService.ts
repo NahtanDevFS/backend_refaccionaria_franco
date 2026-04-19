@@ -413,15 +413,33 @@ export class MetaService {
     `;
 
     const result = await this.pool.query(query, [id_empleado]);
+
+    const hoy = new Date();
+    const mesActual = hoy.getMonth() + 1; // 1–12
+    const anioActual = hoy.getFullYear();
+
     return result.rows.map((row) => {
       const pct = Number(row.porcentaje_cumplimiento);
+      const mes = Number(row.mes);
+      const anio = Number(row.anio);
+
+      // Determinar estado
+      let estado: string;
+      if (anio === anioActual && mes === mesActual) {
+        estado = "en_curso"; // el mes todavía no cerró
+      } else if (pct >= 100) {
+        estado = "cumplió";
+      } else {
+        estado = "no_cumplió";
+      }
+
       return {
-        anio: row.anio,
-        mes: row.mes,
+        anio,
+        mes,
         monto_meta: Number(row.monto_meta),
         monto_vendido: Number(row.monto_vendido),
         porcentaje_cumplimiento: Number(pct.toFixed(2)),
-        cumplio: pct >= 100,
+        estado, // ← nuevo campo (reemplaza "cumplio")
       };
     });
   }
