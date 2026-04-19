@@ -66,6 +66,11 @@ export class GarantiaService {
     }
   }
 
+  // ── 1. MÉTODO resolverGarantia ───────────────────────────────────
+  // Reemplazar el método completo. La única diferencia es que se
+  // elimina el bloque `if (data.aprobado) { UPDATE inventario... }`
+  // El resto queda idéntico.
+
   async resolverGarantia(data: ResolverGarantiaDTO): Promise<void> {
     const client = await this.pool.connect();
     try {
@@ -88,34 +93,15 @@ export class GarantiaService {
       const nuevoEstado = data.aprobado ? "aprobada" : "rechazada";
 
       await client.query(
-        `UPDATE garantia SET estado = $1, resolucion = $2, id_supervisor_aprueba = $3 WHERE id_garantia = $4`,
+        `UPDATE garantia
+            SET estado = $1, resolucion = $2, id_supervisor_aprueba = $3
+          WHERE id_garantia = $4`,
         [nuevoEstado, data.resolucion, data.id_supervisor, data.id_garantia],
       );
 
-      if (data.aprobado) {
-        const invRes = await client.query(
-          `UPDATE inventario_sucursal SET cantidad_actual = cantidad_actual - $1
-           WHERE id_producto = $2 AND id_sucursal = $3 RETURNING id_inventario, cantidad_actual`,
-          [garantia.cantidad, garantia.id_producto, garantia.id_sucursal],
-        );
-
-        if (invRes.rows.length === 0)
-          throw new Error(
-            "Producto sin registro de inventario en la sucursal.",
-          );
-
-        await client.query(
-          `INSERT INTO movimiento_inventario (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante, id_referencia, tabla_referencia, motivo)
-           VALUES ($1, $2, 'salida_garantia', $3, $4, $5, 'garantia', 'Reemplazo físico por garantía aprobada')`,
-          [
-            invRes.rows[0].id_inventario,
-            data.id_supervisor,
-            garantia.cantidad,
-            invRes.rows[0].cantidad_actual,
-            data.id_garantia,
-          ],
-        );
-      }
+      // ── ELIMINADO: el bloque if (data.aprobado) { UPDATE inventario_sucursal... }
+      //    El stock ya NO se descuenta aquí. Se descuenta en recibirProductoDañado
+      //    cuando el cliente trae físicamente la pieza defectuosa.
 
       await client.query("COMMIT");
     } catch (error) {
