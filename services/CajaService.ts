@@ -13,7 +13,7 @@ export class CajaService {
        FROM venta v
        LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
        WHERE v.id_sucursal = $1
-         AND v.estado IN ('pendiente_pago', 'pendiente_cobro_contra_entrega')
+         AND v.estado IN ('pendiente_pago')
        ORDER BY v.created_at ASC`,
       [id_sucursal],
     );
@@ -26,26 +26,40 @@ export class CajaService {
       await client.query("BEGIN");
 
       const ventaRes = await client.query(
-        "SELECT estado, total FROM venta WHERE id_venta = $1 FOR UPDATE",
+        "SELECT estado, total, pago_contra_entrega FROM venta WHERE id_venta = $1 FOR UPDATE",
         [data.id_venta],
       );
+
       if (ventaRes.rows.length === 0) throw new Error("Venta no encontrada");
       const venta = ventaRes.rows[0];
 
       if (venta.estado === "pagada")
         throw new Error("Esta orden ya fue pagada.");
-      if (data.monto < Number(venta.total))
-        throw new Error(
-          `El monto (Q${data.monto}) es menor al total (Q${venta.total}).`,
-        );
 
-      // ── PUNTO 5: uuid_factura ya no existe en pago.
-      //    Si la venta requiere factura FEL, se debe insertar en la
-      //    tabla factura y luego referenciar id_factura en pago.
-      //    Por ahora el INSERT omite uuid_factura (campo eliminado).
+      // ── NUEVO: bloqueo contra entrega no confirmada ──────────────────────
+      if (venta.pago_contra_entrega) {
+        const pedidoRes = await client.query(
+          `SELECT estado FROM pedido_domicilio WHERE id_venta = $1`,
+          [data.id_venta],
+        );
+        const pedido = pedidoRes.rows[0];
+        if (!pedido || pedido.estado !== "entregado") {
+          throw new Error(
+            "Este pedido es pago contra entrega. Solo puede cobrarse una vez que el repartidor lo marque como entregado.",
+          );
+        }
+      }
+      // ────────────────────────────────────────────────────────────────────
+
+      if (data.monto < Number(venta.total)) {
+        throw new Error(
+          `El monto a pagar (Q${data.monto}) es menor al total de la orden (Q${venta.total}).`,
+        );
+      }
+
       await client.query(
         `INSERT INTO pago (id_venta, id_cajero, metodo_pago, monto, referencia)
-         VALUES ($1,$2,$3,$4,$5)`,
+       VALUES ($1, $2, $3, $4, $5)`,
         [
           data.id_venta,
           id_cajero,
@@ -54,6 +68,7 @@ export class CajaService {
           data.referencia,
         ],
       );
+
       await client.query(
         `UPDATE venta SET estado = 'pagada', updated_at = NOW() WHERE id_venta = $1`,
         [data.id_venta],
