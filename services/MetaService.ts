@@ -2,15 +2,17 @@
 import { Pool } from "pg";
 import { AsignarMetaDTO } from "../dtos/MetaDTO";
 
-// Roles que pueden ver/operar sobre cualquier sucursal
 const ROLES_GLOBALES = ["ADMINISTRADOR", "GERENTE_REGIONAL"];
 
 export class MetaService {
   constructor(private readonly pool: Pool) {}
 
-  // ─── Asignar meta mensual ───────────────────────────────────────────────
+  // ── PUNTO 8: meta_venta ya no tiene comision_base_pct ni
+  //    comision_excedente_pct. Ahora tiene id_esquema que referencia
+  //    a la tabla esquema_comision.
+  //    Al asignar una meta, si el DTO trae los porcentajes, buscamos
+  //    el esquema que coincida; si no existe, lo creamos al vuelo.
   async asignarMetaMensual(dto: AsignarMetaDTO) {
-    // Validar que el empleado exista, esté activo y sea VENDEDOR
     const queryEmpleado = `
       SELECT e.id_empleado, p.nombre AS puesto
       FROM empleado e
@@ -18,14 +20,12 @@ export class MetaService {
       WHERE e.id_empleado = $1 AND e.activo = true;
     `;
     const resEmp = await this.pool.query(queryEmpleado, [dto.id_empleado]);
-    if (resEmp.rows.length === 0) {
+    if (resEmp.rows.length === 0)
       throw new Error("El empleado no existe o no está activo");
-    }
-    if (resEmp.rows[0].puesto.toLowerCase() !== "vendedor") {
+    if (resEmp.rows[0].puesto.toLowerCase() !== "vendedor")
       throw new Error(
         "Solo se pueden asignar metas a empleados con puesto 'vendedor'",
       );
-    }
 
     const queryExistente = `SELECT id_meta FROM meta_venta WHERE id_empleado = $1 AND anio = $2 AND mes = $3;`;
     const resultExistente = await this.pool.query(queryExistente, [
@@ -33,37 +33,70 @@ export class MetaService {
       dto.anio,
       dto.mes,
     ]);
-
-    if (resultExistente.rows.length > 0) {
+    if (resultExistente.rows.length > 0)
       throw new Error(
         `El empleado ID ${dto.id_empleado} ya tiene una meta asignada para el ${dto.mes}/${dto.anio}.`,
       );
-    }
+
+    // Resolver id_esquema a partir de los porcentajes del DTO
+    const base = dto.comision_base_pct ?? 2.0;
+    const exc = dto.comision_excedente_pct ?? 4.0;
+    const id_esquema = await this._resolverEsquema(base, exc);
 
     const queryInsert = `
-      INSERT INTO meta_venta (id_empleado, anio, mes, monto_meta, comision_base_pct, comision_excedente_pct)
-      VALUES ($1, $2, $3, $4, $5, $6) RETURNING *;
+      INSERT INTO meta_venta (id_empleado, anio, mes, monto_meta, id_esquema)
+      VALUES ($1, $2, $3, $4, $5) RETURNING *;
     `;
     const resultInsert = await this.pool.query(queryInsert, [
       dto.id_empleado,
       dto.anio,
       dto.mes,
       dto.monto_meta,
-      dto.comision_base_pct,
-      dto.comision_excedente_pct,
+      id_esquema,
     ]);
 
-    return resultInsert.rows[0];
+    // Devolver la fila enriquecida con los porcentajes del esquema
+    // para que el frontend no necesite saber nada de id_esquema.
+    const meta = resultInsert.rows[0];
+    return {
+      ...meta,
+      comision_base_pct: base,
+      comision_excedente_pct: exc,
+    };
   }
 
-  // ─── Cálculo de comisiones individual (sin cambios funcionales) ─────────
+  // Busca un esquema que coincida con los porcentajes dados.
+  // Si no existe, lo crea con nombre automático.
+  private async _resolverEsquema(base: number, exc: number): Promise<number> {
+    const existing = await this.pool.query(
+      `SELECT id_esquema FROM esquema_comision
+       WHERE comision_base_pct = $1 AND comision_excedente_pct = $2 AND activo = TRUE
+       LIMIT 1`,
+      [base, exc],
+    );
+    if (existing.rows.length > 0) return existing.rows[0].id_esquema;
+
+    // No existe → crear
+    const res = await this.pool.query(
+      `INSERT INTO esquema_comision (nombre, comision_base_pct, comision_excedente_pct)
+       VALUES ($1, $2, $3) RETURNING id_esquema`,
+      [`Esquema ${base}%/${exc}%`, base, exc],
+    );
+    return res.rows[0].id_esquema;
+  }
+
+  // ── PUNTO 8: calcularRendimientoYComision ahora obtiene los porcentajes
+  //    desde esquema_comision via JOIN.
   async calcularRendimientoYComision(
     id_empleado: number,
     anio: number,
     mes: number,
   ) {
     const metaRes = await this.pool.query(
-      `SELECT * FROM meta_venta WHERE id_empleado = $1 AND anio = $2 AND mes = $3;`,
+      `SELECT mv.*, ec.comision_base_pct, ec.comision_excedente_pct
+       FROM meta_venta mv
+       JOIN esquema_comision ec ON mv.id_esquema = ec.id_esquema
+       WHERE mv.id_empleado = $1 AND mv.anio = $2 AND mv.mes = $3;`,
       [id_empleado, anio, mes],
     );
     if (metaRes.rows.length === 0)
@@ -73,10 +106,10 @@ export class MetaService {
     const meta = metaRes.rows[0];
 
     const ventasRes = await this.pool.query(
-      `
-      SELECT COALESCE(SUM(total), 0) AS total_vendido FROM venta
-      WHERE id_vendedor = $1 AND estado = 'pagada' AND EXTRACT(YEAR FROM created_at) = $2 AND EXTRACT(MONTH FROM created_at) = $3;
-    `,
+      `SELECT COALESCE(SUM(total), 0) AS total_vendido FROM venta
+       WHERE id_vendedor = $1 AND estado = 'pagada'
+         AND EXTRACT(YEAR FROM created_at) = $2
+         AND EXTRACT(MONTH FROM created_at) = $3;`,
       [id_empleado, anio, mes],
     );
     const totalVendido = Number(ventasRes.rows[0].total_vendido);
@@ -92,8 +125,8 @@ export class MetaService {
       comisionCalculada = totalVendido * pctBase;
     } else {
       llegoALaMeta = true;
-      const excedente = totalVendido - montoMeta;
-      comisionCalculada = montoMeta * pctBase + excedente * pctExcedente;
+      comisionCalculada =
+        montoMeta * pctBase + (totalVendido - montoMeta) * pctExcedente;
     }
 
     return {
@@ -110,20 +143,15 @@ export class MetaService {
     };
   }
 
-  // ─── Rendimiento mensual con filtro por sucursal ────────────────────────
   async obtenerRendimientoMensual(
     rolUsuario: string,
     idSucursalUsuario: number,
     idSucursalFiltro?: number,
   ) {
-    // Determinamos qué sucursal aplicar
     let idSucursalEfectiva: number | null = null;
-
     if (ROLES_GLOBALES.includes(rolUsuario)) {
-      // Admin/Gerente: pueden filtrar por sucursal o ver todas (null = todas)
       idSucursalEfectiva = idSucursalFiltro || null;
     } else {
-      // Cualquier otro rol: forzamos su propia sucursal
       idSucursalEfectiva = idSucursalUsuario;
     }
 
@@ -134,6 +162,8 @@ export class MetaService {
       filtroSucursal = `AND e.id_sucursal = $${params.length}`;
     }
 
+    // ── PUNTO 8: JOIN con esquema_comision para tener los porcentajes
+    //    disponibles si se necesitan en reportes futuros.
     const query = `
       SELECT 
         e.id_empleado,
@@ -174,14 +204,12 @@ export class MetaService {
     }));
   }
 
-  // ─── Consolidado de la sucursal (mes actual) ────────────────────────────
   async obtenerConsolidadoSucursal(
     rolUsuario: string,
     idSucursalUsuario: number,
     idSucursalFiltro?: number,
   ) {
     let idSucursalEfectiva: number | null = null;
-
     if (ROLES_GLOBALES.includes(rolUsuario)) {
       idSucursalEfectiva = idSucursalFiltro || null;
     } else {
@@ -230,7 +258,6 @@ export class MetaService {
     };
   }
 
-  // ─── Vendedores disponibles para asignar meta ───────────────────────────
   async obtenerVendedoresParaAsignar(
     rolUsuario: string,
     idSucursalUsuario: number,
@@ -239,7 +266,6 @@ export class MetaService {
     idSucursalFiltro?: number,
   ) {
     let idSucursalEfectiva: number | null = null;
-
     if (ROLES_GLOBALES.includes(rolUsuario)) {
       idSucursalEfectiva = idSucursalFiltro || null;
     } else {
@@ -284,19 +310,21 @@ export class MetaService {
     }));
   }
 
-  // ─── Sugerencia de meta basada en el mes anterior ───────────────────────
   async obtenerSugerenciaMeta(id_empleado: number) {
     const hoy = new Date();
     let anioRef = hoy.getFullYear();
-    let mesRef = hoy.getMonth(); // mes anterior (getMonth() ya da 0-11; mes anterior en 1-12 sería este)
+    let mesRef = hoy.getMonth();
     if (mesRef === 0) {
       mesRef = 12;
       anioRef -= 1;
     }
 
-    // Buscar meta del mes anterior
+    // ── PUNTO 8: JOIN con esquema_comision para leer los porcentajes
     const metaRes = await this.pool.query(
-      `SELECT monto_meta FROM meta_venta WHERE id_empleado = $1 AND anio = $2 AND mes = $3;`,
+      `SELECT mv.monto_meta, ec.comision_base_pct, ec.comision_excedente_pct
+       FROM meta_venta mv
+       JOIN esquema_comision ec ON mv.id_esquema = ec.id_esquema
+       WHERE mv.id_empleado = $1 AND mv.anio = $2 AND mv.mes = $3;`,
       [id_empleado, anioRef, mesRef],
     );
 
@@ -314,16 +342,12 @@ export class MetaService {
 
     const metaAnterior = Number(metaRes.rows[0].monto_meta);
 
-    // Sumar ventas pagadas del mes anterior
     const ventasRes = await this.pool.query(
-      `
-      SELECT COALESCE(SUM(total), 0) AS total_vendido
-      FROM venta
-      WHERE id_vendedor = $1 
-        AND estado = 'pagada'
-        AND EXTRACT(YEAR FROM created_at) = $2 
-        AND EXTRACT(MONTH FROM created_at) = $3;
-      `,
+      `SELECT COALESCE(SUM(total), 0) AS total_vendido
+       FROM venta
+       WHERE id_vendedor = $1 AND estado = 'pagada'
+         AND EXTRACT(YEAR FROM created_at) = $2
+         AND EXTRACT(MONTH FROM created_at) = $3;`,
       [id_empleado, anioRef, mesRef],
     );
     const vendidoAnterior = Number(ventasRes.rows[0].total_vendido);
@@ -354,22 +378,18 @@ export class MetaService {
     };
   }
 
-  // ─── Listar sucursales (para selector de Admin/Gerente) ─────────────────
   async listarSucursales() {
-    const query = `
-      SELECT id_sucursal, nombre 
-      FROM sucursal 
-      WHERE activo = true
-      ORDER BY nombre;
-    `;
-    const result = await this.pool.query(query);
+    const result = await this.pool.query(
+      `SELECT id_sucursal, nombre FROM sucursal WHERE activo = true ORDER BY nombre;`,
+    );
     return result.rows.map((row) => ({
       id_sucursal: row.id_sucursal,
       nombre: row.nombre,
     }));
   }
 
-  // ─── Historial completo de metas de un empleado ─────────────────────────
+  // ── PUNTO 8: obtenerHistorialEmpleado hace JOIN con esquema_comision
+  //    para exponer los porcentajes en el historial si se necesitan.
   async obtenerHistorialEmpleado(id_empleado: number) {
     const query = `
       SELECT 

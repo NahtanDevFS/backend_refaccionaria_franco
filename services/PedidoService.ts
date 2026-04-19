@@ -6,31 +6,52 @@ import { EstadoPedido } from "../types/pedido.types";
 export class PedidoService {
   constructor(private readonly pool: Pool) {}
 
+  // ── PUNTO 7: programarDespacho ya no inserta direccion_entrega,
+  //    nombre_contacto ni telefono_contacto directamente en pedido_domicilio.
+  //    Primero crea un registro en destinatario y luego lo referencia.
   async programarDespacho(dto: ProgramarPedidoDTO) {
     const resultVenta = await this.pool.query(
-      "SELECT estado FROM venta WHERE id_venta = $1",
+      "SELECT estado, id_cliente FROM venta WHERE id_venta = $1",
       [dto.id_venta],
     );
     if (resultVenta.rows.length === 0)
       throw new Error(`La venta con ID ${dto.id_venta} no existe.`);
 
-    const estadoVenta = resultVenta.rows[0].estado;
+    const { estado: estadoVenta, id_cliente } = resultVenta.rows[0];
     if (estadoVenta === "cancelada" || estadoVenta === "entregada") {
       throw new Error(
         `No se puede programar despacho para una venta con estado: ${estadoVenta}`,
       );
     }
 
-    const query = `
-      INSERT INTO pedido_domicilio (id_venta, id_repartidor, direccion_entrega, estado)
-      VALUES ($1, $2, $3, 'pendiente') RETURNING *;
-    `;
-    const result = await this.pool.query(query, [
-      dto.id_venta,
-      dto.id_repartidor || null,
-      dto.direccion_entrega,
-    ]);
-    return result.rows[0];
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      // Crear destinatario con los datos de entrega
+      const destRes = await client.query(
+        `INSERT INTO destinatario (id_cliente, direccion_texto)
+         VALUES ($1, $2)
+         RETURNING id_destinatario`,
+        [id_cliente || null, dto.direccion_entrega],
+      );
+      const id_destinatario = destRes.rows[0].id_destinatario;
+
+      // Insertar pedido referenciando el destinatario
+      const result = await client.query(
+        `INSERT INTO pedido_domicilio (id_venta, id_repartidor, id_destinatario, estado)
+         VALUES ($1, $2, $3, 'pendiente') RETURNING *;`,
+        [dto.id_venta, dto.id_repartidor || null, id_destinatario],
+      );
+
+      await client.query("COMMIT");
+      return result.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async reportarEntrega(id_pedido: number, dto: ResultadoEntregaDTO) {

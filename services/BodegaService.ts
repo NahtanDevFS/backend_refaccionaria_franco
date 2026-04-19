@@ -5,17 +5,28 @@ import { EmitirDespachoDTO, AjusteInventarioDTO } from "../dtos/BodegaDTO";
 export class BodegaService {
   constructor(private readonly pool: Pool) {}
 
+  // ── PUNTO 3: precio_costo ya no existe en producto.
+  //    Ahora viene de producto_proveedor WHERE es_principal = TRUE.
+  //    Se usa un LEFT JOIN LATERAL para obtener el costo del proveedor
+  //    principal sin romper productos que aún no tengan proveedor asignado.
   async obtenerInventarioLocal(id_sucursal: number, filtros?: any) {
     let query = `
       SELECT 
-        i.id_inventario, i.id_producto, p.sku, p.nombre, i.cantidad_actual, i.punto_reorden,
-        c.nombre as categoria, m.nombre as marca_repuesto,
-        p.precio_venta, p.precio_costo as costo, -- <-- CORREGIDO AQUÍ
-        (i.cantidad_actual <= i.punto_reorden) as requiere_reorden,
-        (SELECT COALESCE(SUM(i2.cantidad_actual), 0) FROM inventario_sucursal i2 WHERE i2.id_producto = p.id_producto AND i2.id_sucursal != $1) as stock_otras_sucursales,
+        i.id_inventario, i.id_producto, p.sku, p.nombre,
+        i.cantidad_actual, i.punto_reorden,
+        c.nombre  AS categoria,
+        m.nombre  AS marca_repuesto,
+        p.precio_venta,
+        -- Costo desde proveedor principal (PUNTO 3)
+        pp_costo.precio_costo AS costo,
+        (i.cantidad_actual <= i.punto_reorden) AS requiere_reorden,
+        (SELECT COALESCE(SUM(i2.cantidad_actual), 0)
+         FROM inventario_sucursal i2
+         WHERE i2.id_producto = p.id_producto AND i2.id_sucursal != $1) AS stock_otras_sucursales,
         (SELECT COALESCE(json_agg(json_build_object('sucursal', s.nombre, 'cantidad', i2.cantidad_actual)), '[]'::json)
-         FROM inventario_sucursal i2 JOIN sucursal s ON i2.id_sucursal = s.id_sucursal
-         WHERE i2.id_producto = p.id_producto AND i2.id_sucursal != $1 AND i2.cantidad_actual > 0) as detalle_otras_sucursales,
+         FROM inventario_sucursal i2
+         JOIN sucursal s ON i2.id_sucursal = s.id_sucursal
+         WHERE i2.id_producto = p.id_producto AND i2.id_sucursal != $1 AND i2.cantidad_actual > 0) AS detalle_otras_sucursales,
         (SELECT COALESCE(json_agg(json_build_object(
             'marca', mv.nombre, 
             'modelo', mod.nombre, 
@@ -26,11 +37,20 @@ export class BodegaService {
          FROM compatibilidad_producto cp
          LEFT JOIN modelo_vehiculo mod ON cp.id_modelo = mod.id_modelo
          LEFT JOIN marca_vehiculo mv ON mod.id_marca_vehiculo = mv.id_marca_vehiculo
-         WHERE cp.id_producto = p.id_producto) as compatibilidades
+         WHERE cp.id_producto = p.id_producto) AS compatibilidades
       FROM inventario_sucursal i
       JOIN producto p ON i.id_producto = p.id_producto
       LEFT JOIN categoria_producto c ON p.id_categoria = c.id_categoria
       LEFT JOIN marca m ON p.id_marca = m.id_marca
+      -- JOIN LATERAL para obtener precio_costo del proveedor principal
+      LEFT JOIN LATERAL (
+        SELECT precio_costo
+        FROM producto_proveedor
+        WHERE id_producto = p.id_producto
+          AND es_principal = TRUE
+          AND activo = TRUE
+        LIMIT 1
+      ) pp_costo ON true
       WHERE i.id_sucursal = $1
     `;
 
@@ -74,6 +94,7 @@ export class BodegaService {
       punto_reorden: Number(row.punto_reorden),
       stock_otras_sucursales: Number(row.stock_otras_sucursales),
       precio_venta: Number(row.precio_venta || 0),
+      // Si no hay proveedor principal asignado, costo = 0
       costo: Number(row.costo || 0),
     }));
   }
@@ -94,10 +115,8 @@ export class BodegaService {
       await client.query("BEGIN");
 
       const resNota = await client.query(
-        `
-        INSERT INTO nota_despacho (id_sucursal_origen, id_sucursal_destino, id_usuario_emite, estado)
-        VALUES ($1, $2, $3, 'en_ruta') RETURNING id_despacho
-      `,
+        `INSERT INTO nota_despacho (id_sucursal_origen, id_sucursal_destino, id_usuario_emite, estado)
+         VALUES ($1, $2, $3, 'en_ruta') RETURNING id_despacho`,
         [id_sucursal_origen, data.id_sucursal_destino, id_usuario],
       );
 
@@ -105,10 +124,8 @@ export class BodegaService {
 
       for (const det of data.detalles) {
         const invRes = await client.query(
-          `
-          SELECT id_inventario, cantidad_actual FROM inventario_sucursal 
-          WHERE id_producto = $1 AND id_sucursal = $2 FOR UPDATE
-        `,
+          `SELECT id_inventario, cantidad_actual FROM inventario_sucursal 
+           WHERE id_producto = $1 AND id_sucursal = $2 FOR UPDATE`,
           [det.id_producto, id_sucursal_origen],
         );
 
@@ -133,12 +150,9 @@ export class BodegaService {
           `INSERT INTO detalle_despacho (id_despacho, id_producto, cantidad) VALUES ($1, $2, $3)`,
           [id_despacho, det.id_producto, det.cantidad],
         );
-
         await client.query(
-          `
-          INSERT INTO movimiento_inventario (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante, id_referencia, tabla_referencia, motivo)
-          VALUES ($1, $2, 'salida_traslado', $3, $4, $5, 'nota_despacho', 'Envío de mercadería a otra sucursal')
-        `,
+          `INSERT INTO movimiento_inventario (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante, id_referencia, tabla_referencia, motivo)
+           VALUES ($1, $2, 'salida_traslado', $3, $4, $5, 'nota_despacho', 'Envío de mercadería a otra sucursal')`,
           [
             id_inventario,
             id_usuario,
@@ -162,9 +176,10 @@ export class BodegaService {
   async obtenerRecepciones(id_sucursal_destino: number) {
     const query = `
       SELECT 
-        nd.id_despacho, nd.fecha_emision, s.nombre as origen,
+        nd.id_despacho, nd.fecha_emision, s.nombre AS origen,
         (SELECT json_agg(json_build_object('producto', p.nombre, 'sku', p.sku, 'cantidad', dd.cantidad))
-         FROM detalle_despacho dd JOIN producto p ON dd.id_producto = p.id_producto WHERE dd.id_despacho = nd.id_despacho) as productos
+         FROM detalle_despacho dd JOIN producto p ON dd.id_producto = p.id_producto
+         WHERE dd.id_despacho = nd.id_despacho) AS productos
       FROM nota_despacho nd
       JOIN sucursal s ON nd.id_sucursal_origen = s.id_sucursal
       WHERE nd.id_sucursal_destino = $1 AND nd.estado = 'en_ruta'
@@ -208,13 +223,11 @@ export class BodegaService {
         const cantidadRecibida = Number(det.cantidad);
 
         const invRes = await client.query(
-          `
-          INSERT INTO inventario_sucursal (id_producto, id_sucursal, cantidad_actual)
-          VALUES ($1, $2, $3)
-          ON CONFLICT (id_producto, id_sucursal) 
-          DO UPDATE SET cantidad_actual = inventario_sucursal.cantidad_actual + EXCLUDED.cantidad_actual
-          RETURNING id_inventario, cantidad_actual
-        `,
+          `INSERT INTO inventario_sucursal (id_producto, id_sucursal, cantidad_actual)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (id_producto, id_sucursal) 
+           DO UPDATE SET cantidad_actual = inventario_sucursal.cantidad_actual + EXCLUDED.cantidad_actual
+           RETURNING id_inventario, cantidad_actual`,
           [det.id_producto, id_sucursal_destino, cantidadRecibida],
         );
 
@@ -222,10 +235,8 @@ export class BodegaService {
         const nueva_cantidad = Number(invRes.rows[0].cantidad_actual);
 
         await client.query(
-          `
-          INSERT INTO movimiento_inventario (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante, id_referencia, tabla_referencia, motivo)
-          VALUES ($1, $2, 'entrada_traslado', $3, $4, $5, 'nota_despacho', 'Recepción de mercadería desde otra sucursal')
-        `,
+          `INSERT INTO movimiento_inventario (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante, id_referencia, tabla_referencia, motivo)
+           VALUES ($1, $2, 'entrada_traslado', $3, $4, $5, 'nota_despacho', 'Recepción de mercadería desde otra sucursal')`,
           [
             id_inventario,
             id_usuario,
@@ -255,7 +266,8 @@ export class BodegaService {
       await client.query("BEGIN");
 
       const invRes = await client.query(
-        `SELECT id_inventario, cantidad_actual FROM inventario_sucursal WHERE id_producto = $1 AND id_sucursal = $2 FOR UPDATE`,
+        `SELECT id_inventario, cantidad_actual FROM inventario_sucursal
+         WHERE id_producto = $1 AND id_sucursal = $2 FOR UPDATE`,
         [data.id_producto, id_sucursal],
       );
       if (invRes.rows.length === 0)
@@ -278,10 +290,8 @@ export class BodegaService {
         [nueva_cantidad, id_inventario],
       );
       await client.query(
-        `
-        INSERT INTO movimiento_inventario (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante, motivo)
-        VALUES ($1, $2, $3, $4, $5, $6)
-      `,
+        `INSERT INTO movimiento_inventario (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante, motivo)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         [
           id_inventario,
           id_usuario,

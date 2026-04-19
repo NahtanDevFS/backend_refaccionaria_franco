@@ -15,16 +15,12 @@ export class VentaService {
     const values: any[] = [];
     let paramIndex = 1;
 
-    // ── Filtro de sucursal ───────────────────────────────────────────────────
-    // Viene definido siempre para roles no globales (forzado en el controller).
-    // Para ADMINISTRADOR / GERENTE_REGIONAL viene undefined si no filtraron.
     if (filtros?.id_sucursal !== undefined) {
       baseQuery += ` AND v.id_sucursal = $${paramIndex}`;
       values.push(Number(filtros.id_sucursal));
       paramIndex++;
     }
 
-    // ── Resto de filtros ─────────────────────────────────────────────────────
     if (filtros?.id_venta) {
       baseQuery += ` AND v.id_venta = $${paramIndex}`;
       values.push(Number(filtros.id_venta));
@@ -123,10 +119,8 @@ export class VentaService {
           id_cliente = clienteRes.rows[0].id_cliente;
         } else if (data.cliente_nuevo) {
           const insertCliente = await client.query(
-            `
-            INSERT INTO cliente (nombre_razon_social, nit, tipo_cliente, telefono, email, direccion, id_municipio, notas_internas) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id_cliente
-          `,
+            `INSERT INTO cliente (nombre_razon_social, nit, tipo_cliente, telefono, email, direccion, id_municipio, notas_internas) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id_cliente`,
             [
               data.cliente_nuevo.nombre_razon_social,
               data.nit,
@@ -142,14 +136,17 @@ export class VentaService {
         }
       }
 
-      let subtotalConIva = 0;
-      let totalIvaFactura = 0;
-      const detallesCalculados = []; // <-- NUEVO: Guardaremos los precios reales aquí
+      // ── PUNTO 1 y 2: Los totales de venta y los campos calculados de
+      //    detalle_venta son manejados por triggers de BD. La app solo
+      //    envía cantidad y precio_unitario; NO envía subtotal_linea,
+      //    monto_iva, subtotal de venta, ni total de venta.
+      //    El trigger trg_sync_totales_venta recalcula venta automáticamente.
+
+      const detallesCalculados = [];
 
       for (const det of data.detalles) {
         let precioUnitario = 0;
 
-        // <-- NUEVA LÓGICA DE INVENTARIO PARA REACONDICIONADOS -->
         if (det.id_producto_reacondicionado) {
           const reacRes = await client.query(
             `SELECT precio_venta_reac, cantidad 
@@ -177,14 +174,11 @@ export class VentaService {
             [det.cantidad, det.id_producto_reacondicionado],
           );
         } else {
-          // Lógica Normal
           const prodRes = await client.query(
-            `
-            SELECT p.precio_venta, i.cantidad_actual 
-            FROM producto p 
-            JOIN inventario_sucursal i ON p.id_producto = i.id_producto 
-            WHERE p.id_producto = $1 AND i.id_sucursal = $2 FOR UPDATE
-          `,
+            `SELECT p.precio_venta, i.cantidad_actual 
+             FROM producto p 
+             JOIN inventario_sucursal i ON p.id_producto = i.id_producto 
+             WHERE p.id_producto = $1 AND i.id_sucursal = $2 FOR UPDATE`,
             [det.id_producto, data.id_sucursal],
           );
 
@@ -200,34 +194,19 @@ export class VentaService {
           precioUnitario = Number(prodRes.rows[0].precio_venta);
 
           await client.query(
-            `
-            UPDATE inventario_sucursal SET cantidad_actual = cantidad_actual - $1 
-            WHERE id_producto = $2 AND id_sucursal = $3
-          `,
+            `UPDATE inventario_sucursal SET cantidad_actual = cantidad_actual - $1 
+             WHERE id_producto = $2 AND id_sucursal = $3`,
             [det.cantidad, det.id_producto, data.id_sucursal],
           );
         }
 
-        const subtotalLinea = precioUnitario * det.cantidad;
-
-        // Desglose de IVA
-        const precioBaseSinIva = subtotalLinea / 1.12;
-        const montoIvaLinea = subtotalLinea - precioBaseSinIva;
-
-        subtotalConIva += subtotalLinea;
-        totalIvaFactura += montoIvaLinea;
-
         detallesCalculados.push({
           ...det,
           precioUnitario,
-          subtotalLinea,
-          montoIvaLinea: Number(montoIvaLinea.toFixed(2)),
         });
       }
 
       const pctDescuento = data.descuento_porcentaje || 0;
-      const descuentoMonto = subtotalConIva * (pctDescuento / 100);
-      const totalFinal = subtotalConIva - descuentoMonto;
       const esContraEntrega = data.pago_contra_entrega || false;
 
       let estadoVenta = "pendiente_pago";
@@ -237,11 +216,13 @@ export class VentaService {
         estadoVenta = "pendiente_cobro_contra_entrega";
       }
 
+      // Insertar venta con subtotal=0, total=0 y descuento.
+      // El trigger trg_sync_totales_venta actualizará subtotal/total/monto_iva
+      // automáticamente al insertar los detalles a continuación.
+      const descuentoMonto_placeholder = 0; // se recalcula al final con el trigger
       const ventaRes = await client.query(
-        `
-        INSERT INTO venta (id_sucursal, id_vendedor, id_cliente, canal, pago_contra_entrega, estado, subtotal, descuento_monto, monto_iva, total)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id_venta
-      `,
+        `INSERT INTO venta (id_sucursal, id_vendedor, id_cliente, canal, pago_contra_entrega, estado, subtotal, descuento_monto, monto_iva, total)
+         VALUES ($1, $2, $3, $4, $5, $6, 0, $7, 0, 0) RETURNING id_venta`,
         [
           data.id_sucursal,
           data.id_vendedor,
@@ -249,47 +230,70 @@ export class VentaService {
           data.canal,
           esContraEntrega,
           estadoVenta,
-          subtotalConIva,
-          descuentoMonto,
-          totalIvaFactura,
-          totalFinal,
+          // descuento_monto: lo calculamos después del trigger para saber el subtotal real
+          descuentoMonto_placeholder,
         ],
       );
 
       const id_venta = ventaRes.rows[0].id_venta;
 
-      // <-- NUEVA FORMA DE INSERTAR DETALLES -->
+      // ── PUNTO 1: No enviar subtotal_linea ni monto_iva — son columnas
+      //    GENERATED en la BD, calculadas automáticamente como:
+      //    subtotal_linea = cantidad * precio_unitario
+      //    monto_iva      = subtotal_linea * porcentaje_iva / (100 + porcentaje_iva)
       for (const det of detallesCalculados) {
         await client.query(
-          `
-          INSERT INTO detalle_venta (id_venta, id_producto, id_producto_reacondicionado, cantidad, precio_unitario, subtotal_linea, porcentaje_iva, monto_iva)
-          VALUES ($1, $2, $3, $4, $5, $6, 12.00, $7)
-        `,
+          `INSERT INTO detalle_venta 
+             (id_venta, id_producto, id_producto_reacondicionado, cantidad, precio_unitario, porcentaje_iva)
+           VALUES ($1, $2, $3, $4, $5, 12.00)`,
           [
             id_venta,
             det.id_producto,
             det.id_producto_reacondicionado || null,
             det.cantidad,
             det.precioUnitario,
-            det.subtotalLinea,
-            det.montoIvaLinea,
+            // subtotal_linea y monto_iva NO se envían — los calcula la BD
           ],
         );
       }
 
-      if (data.canal === "domicilio" && data.direccion_entrega) {
+      // ── PUNTO 2: Ahora que el trigger ya recalculó el subtotal de venta,
+      //    aplicamos el descuento sobre ese valor real.
+      if (pctDescuento > 0) {
         await client.query(
-          `
-          INSERT INTO pedido_domicilio (id_venta, id_repartidor, direccion_entrega, estado, nombre_contacto, telefono_contacto)
-          VALUES ($1, $2, $3, 'pendiente', $4, $5)
-        `,
+          `UPDATE venta
+           SET descuento_monto = ROUND(subtotal * $1 / 100, 2),
+               total           = ROUND(subtotal * (1 - $1 / 100), 2)
+           WHERE id_venta = $2`,
+          [pctDescuento, id_venta],
+        );
+      }
+
+      // ── PUNTO 7: pedido_domicilio ya no tiene nombre_contacto,
+      //    telefono_contacto ni direccion_entrega. Ahora inserta en
+      //    la tabla destinatario y luego referencia id_destinatario.
+      if (data.canal === "domicilio" && data.direccion_entrega) {
+        // Insertar destinatario primero
+        const destRes = await client.query(
+          `INSERT INTO destinatario 
+             (id_cliente, nombre, telefono, direccion_texto)
+           VALUES ($1, $2, $3, $4)
+           RETURNING id_destinatario`,
           [
-            id_venta,
-            data.id_repartidor,
+            id_cliente, // puede ser null si es CF
+            data.nombre_contacto || null,
+            data.telefono_contacto || null,
             data.direccion_entrega,
-            data.nombre_contacto,
-            data.telefono_contacto,
           ],
+        );
+        const id_destinatario = destRes.rows[0].id_destinatario;
+
+        // Insertar pedido referenciando el destinatario
+        await client.query(
+          `INSERT INTO pedido_domicilio 
+             (id_venta, id_repartidor, id_destinatario, estado)
+           VALUES ($1, $2, $3, 'pendiente')`,
+          [id_venta, data.id_repartidor || null, id_destinatario],
         );
       }
 
@@ -373,35 +377,31 @@ export class VentaService {
       }
 
       await client.query(
-        `
-        UPDATE venta SET estado = $1, id_supervisor_autoriza = $2, updated_at = NOW() WHERE id_venta = $3
-      `,
+        `UPDATE venta SET estado = $1, id_supervisor_autoriza = $2, updated_at = NOW() WHERE id_venta = $3`,
         [nuevoEstado, id_supervisor, id_venta],
       );
 
-      const accion = aprobado ? "aprobacion_descuento" : "rechazo_descuento";
-      const datosNuevos = JSON.stringify({
-        estado: nuevoEstado,
-        id_supervisor_autoriza: id_supervisor,
-      });
-
       await client.query(
-        `
-        INSERT INTO log_auditoria (id_usuario, tabla_afectada, accion, id_registro, datos_nuevos)
-        VALUES ($1, 'venta', $2, $3, $4)
-      `,
-        [id_usuario_log, accion, id_venta, datosNuevos],
+        `INSERT INTO log_auditoria (id_usuario, tabla_afectada, accion, id_registro, datos_nuevos)
+         VALUES ($1, 'venta', $2, $3, $4)`,
+        [
+          id_usuario_log,
+          aprobado ? "aprobacion_descuento" : "rechazo_descuento",
+          id_venta,
+          JSON.stringify({
+            estado: nuevoEstado,
+            id_supervisor_autoriza: id_supervisor,
+          }),
+        ],
       );
 
       if (!aprobado) {
         await client.query(
-          `
-          UPDATE inventario_sucursal i
-          SET cantidad_actual = i.cantidad_actual + dv.cantidad
-          FROM detalle_venta dv
-          WHERE i.id_producto = dv.id_producto AND dv.id_venta = $1
-            AND i.id_sucursal = (SELECT id_sucursal FROM venta WHERE id_venta = $1)
-        `,
+          `UPDATE inventario_sucursal i
+           SET cantidad_actual = i.cantidad_actual + dv.cantidad
+           FROM detalle_venta dv
+           WHERE i.id_producto = dv.id_producto AND dv.id_venta = $1
+             AND i.id_sucursal = (SELECT id_sucursal FROM venta WHERE id_venta = $1)`,
           [id_venta],
         );
       }
@@ -419,15 +419,21 @@ export class VentaService {
     id_venta: number,
   ): Promise<{ venta: any; detalles: any[] } | null> {
     const queryVenta = `
-      SELECT v.*, COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente, CONCAT(e.nombre, ' ', e.apellido) as vendedor
+      SELECT v.*, COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente, 
+             CONCAT(e.nombre, ' ', e.apellido) as vendedor
       FROM venta v
       LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
       LEFT JOIN empleado e ON v.id_vendedor = e.id_empleado
       WHERE v.id_venta = $1;
     `;
+    // subtotal_linea y monto_iva ahora son columnas GENERATED — siguen
+    // disponibles en SELECT con el mismo nombre, sin cambios para el frontend.
     const queryDetalles = `
-      SELECT dv.id_detalle, dv.id_producto, p.nombre as producto, p.sku, p.garantia_dias, dv.cantidad, dv.precio_unitario, dv.subtotal_linea, dv.monto_iva
-      FROM detalle_venta dv JOIN producto p ON dv.id_producto = p.id_producto WHERE dv.id_venta = $1;
+      SELECT dv.id_detalle, dv.id_producto, p.nombre as producto, p.sku, p.garantia_dias,
+             dv.cantidad, dv.precio_unitario, dv.subtotal_linea, dv.monto_iva
+      FROM detalle_venta dv 
+      JOIN producto p ON dv.id_producto = p.id_producto 
+      WHERE dv.id_venta = $1;
     `;
 
     const resVenta = await this.pool.query(queryVenta, [id_venta]);
@@ -447,9 +453,6 @@ export class VentaService {
     };
   }
 
-  // ─── NUEVO: Historial completo de descuentos ─────────────────────────────
-  // Trae todas las ventas con descuento > 0 de la sucursal,
-  // incluyendo las que NO requirieron aprobación (≤5%) y las que sí.
   async obtenerHistorialDescuentos(
     id_sucursal: number,
     desde?: string,
@@ -478,8 +481,6 @@ export class VentaService {
         ROUND((v.descuento_monto / NULLIF(v.subtotal, 0)) * 100, 2) AS pct_descuento,
         COALESCE(c.nombre_razon_social, 'Consumidor Final')         AS cliente,
         COALESCE(CONCAT(ev.nombre, ' ', ev.apellido), 'Sin asignar') AS vendedor,
-        -- Si tiene supervisor = requirió aprobación formal (>5%)
-        -- Si no tiene supervisor pero descuento > 0 = fue automático (≤5%)
         CASE
           WHEN v.descuento_monto / NULLIF(v.subtotal, 0) > 0.05 THEN 'requirio_aprobacion'
           ELSE 'automatico'

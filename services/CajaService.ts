@@ -39,6 +39,10 @@ export class CajaService {
           `El monto (Q${data.monto}) es menor al total (Q${venta.total}).`,
         );
 
+      // ── PUNTO 5: uuid_factura ya no existe en pago.
+      //    Si la venta requiere factura FEL, se debe insertar en la
+      //    tabla factura y luego referenciar id_factura en pago.
+      //    Por ahora el INSERT omite uuid_factura (campo eliminado).
       await client.query(
         `INSERT INTO pago (id_venta, id_cajero, metodo_pago, monto, referencia)
          VALUES ($1,$2,$3,$4,$5)`,
@@ -64,11 +68,6 @@ export class CajaService {
     }
   }
 
-  // ── Resumen del día para el arqueo ────────────────────────────────────────
-  // Incluye:
-  //   a) cobros directos del cajero (id_cajero = este cajero)
-  //   b) cobros de repartidores ya liquidados con este cajero (id_cajero se
-  //      actualizó en la liquidación)
   async obtenerResumenDia(id_cajero: number) {
     const result = await this.pool.query(
       `SELECT metodo_pago, COALESCE(SUM(monto), 0) AS total
@@ -85,9 +84,8 @@ export class CajaService {
     }));
   }
 
-  // ── Cobros de repartidores pendientes de liquidar ─────────────────────────
-  // Pagos con id_cajero IS NULL (cobrado por repartidor, aún no entregado al cajero)
-  // filtrados por sucursal del cajero para que solo vea los de su sede.
+  // ── PUNTO 7: La consulta de cobros pendientes de repartidores
+  //    ahora obtiene la dirección desde la tabla destinatario.
   async obtenerCobrosRepartidoresPendientes(id_sucursal: number) {
     const result = await this.pool.query(
       `SELECT
@@ -98,12 +96,14 @@ export class CajaService {
          p.fecha_pago,
          CONCAT(er.nombre, ' ', er.apellido)                    AS repartidor,
          COALESCE(c.nombre_razon_social, 'Consumidor Final')    AS cliente,
-         pd.direccion_entrega
+         d.direccion_texto                                       AS direccion_entrega
        FROM pago p
-       JOIN venta       v  ON p.id_venta      = v.id_venta
-       JOIN empleado    er ON p.id_repartidor  = er.id_empleado
-       LEFT JOIN cliente c ON v.id_cliente    = c.id_cliente
-       LEFT JOIN pedido_domicilio pd ON pd.id_venta = v.id_venta
+       JOIN venta            v  ON p.id_venta      = v.id_venta
+       JOIN empleado         er ON p.id_repartidor = er.id_empleado
+       LEFT JOIN cliente      c ON v.id_cliente    = c.id_cliente
+       -- JOIN con pedido_domicilio y destinatario para obtener la dirección
+       LEFT JOIN pedido_domicilio pd ON pd.id_venta       = v.id_venta
+       LEFT JOIN destinatario     d  ON pd.id_destinatario = d.id_destinatario
        WHERE p.id_cajero IS NULL
          AND p.id_repartidor IS NOT NULL
          AND v.id_sucursal = $1
@@ -122,9 +122,6 @@ export class CajaService {
     }));
   }
 
-  // ── Liquidar cobros de un repartidor ──────────────────────────────────────
-  // El cajero confirma que recibió el efectivo del repartidor.
-  // Se actualiza id_cajero en todos los pagos seleccionados.
   async liquidarRepartidor(
     id_cajero: number,
     id_repartidor: number,
@@ -137,8 +134,6 @@ export class CajaService {
     try {
       await client.query("BEGIN");
 
-      // Verificar que todos los pagos pertenezcan a la sucursal correcta
-      // y estén aún sin cajero
       const check = await client.query(
         `SELECT COUNT(*) AS total
          FROM pago p
@@ -155,18 +150,13 @@ export class CajaService {
           "Uno o más pagos no son válidos para liquidar (ya liquidados, de otro repartidor o de otra sucursal).",
         );
 
-      // Asignar el cajero que recibe el efectivo
       await client.query(
-        `UPDATE pago
-         SET id_cajero = $1
-         WHERE id_pago = ANY($2::int[])`,
+        `UPDATE pago SET id_cajero = $1 WHERE id_pago = ANY($2::int[])`,
         [id_cajero, id_pagos],
       );
 
-      // Calcular total liquidado para retornarlo
       const totalRes = await client.query(
-        `SELECT COALESCE(SUM(monto), 0) AS total
-         FROM pago WHERE id_pago = ANY($1::int[])`,
+        `SELECT COALESCE(SUM(monto), 0) AS total FROM pago WHERE id_pago = ANY($1::int[])`,
         [id_pagos],
       );
 
@@ -184,7 +174,8 @@ export class CajaService {
     }
   }
 
-  // ── Historial de cobros (pagos) ───────────────────────────────────────────
+  // ── PUNTO 7: El historial de cobros obtiene la dirección del cliente
+  //    desde destinatario (via pedido_domicilio) en lugar del campo plano.
   async obtenerHistorial(id_sucursal: number, desde?: string, hasta?: string) {
     const fechaDesde = desde ?? new Date().toISOString().split("T")[0];
     const fechaHasta = hasta ?? new Date().toISOString().split("T")[0];
@@ -197,9 +188,7 @@ export class CajaService {
          COALESCE(c.nombre_razon_social, 'Consumidor Final') AS cliente,
          COALESCE(c.nit, 'CF')                               AS nit,
          c.direccion                                          AS direccion_cliente,
-         -- Cajero: quien cobró directamente o quien liquidó el cobro del repartidor
          CONCAT(ec.nombre, ' ', ec.apellido)                 AS cajero,
-         -- Repartidor: quien cobró en ruta (puede ser null)
          CONCAT(er.nombre, ' ', er.apellido)                 AS repartidor,
          v.subtotal,
          COALESCE(v.descuento_monto, 0)                      AS descuento_monto,
@@ -253,7 +242,6 @@ export class CajaService {
       cliente: r.cliente,
       nit: r.nit,
       direccion_cliente: r.direccion_cliente ?? null,
-      // Si hubo repartidor: mostrar su nombre + indicador
       cajero: r.cajero ?? null,
       repartidor: r.repartidor ?? null,
       es_cobro_ruta: !!r.id_repartidor,
