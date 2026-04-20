@@ -65,20 +65,6 @@ export class GarantiaController {
     }
   };
 
-  obtenerPendientesRecepcion = async (
-    req: Request,
-    res: Response,
-  ): Promise<void> => {
-    try {
-      const data = await this.garantiaService.obtenerPendientesRecepcion(
-        Number(req.params.id_sucursal),
-      );
-      res.status(200).json({ success: true, data });
-    } catch (error: any) {
-      res.status(400).json({ success: false, message: error.message });
-    }
-  };
-
   obtenerPendientesInspeccion = async (
     req: Request,
     res: Response,
@@ -88,33 +74,6 @@ export class GarantiaController {
         Number(req.params.id_sucursal),
       );
       res.status(200).json({ success: true, data });
-    } catch (error: any) {
-      res.status(400).json({ success: false, message: error.message });
-    }
-  };
-
-  // --- ACCIONES FÍSICAS ---
-
-  recibirRetorno = async (req: Request, res: Response): Promise<void> => {
-    try {
-      const { id_garantia, condicion_recibido, notas_inspeccion } = req.body;
-      const id_empleado = req.usuario?.id_empleado;
-
-      if (!id_empleado) throw new Error("Usuario no autenticado");
-      if (!id_garantia || !condicion_recibido)
-        throw new Error("Faltan campos obligatorios");
-
-      const id_retorno = await this.garantiaService.recibirProductoDañado(
-        id_garantia,
-        id_empleado,
-        condicion_recibido,
-        notas_inspeccion || "",
-      );
-      res.status(201).json({
-        success: true,
-        message: "Pieza recibida correctamente",
-        data: { id_retorno },
-      });
     } catch (error: any) {
       res.status(400).json({ success: false, message: error.message });
     }

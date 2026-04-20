@@ -12,10 +12,26 @@ export const crearGarantiaSchema = z.object({
     .min(10, "El motivo del reclamo debe ser detallado (mínimo 10 caracteres)"),
 });
 
-export const resolverGarantiaSchema = z.object({
-  id_garantia: z.number().int().positive("El ID de la garantía es obligatorio"),
-  aprobado: z.boolean({
-    message: "Debe especificar si está aprobado o no",
-  }),
-  resolucion: z.string().min(5, "La resolución debe estar detallada"),
-});
+export const resolverGarantiaSchema = z
+  .object({
+    id_garantia: z
+      .number()
+      .int()
+      .positive("El ID de la garantía es obligatorio"),
+    aprobado: z.boolean({ message: "Debe especificar si está aprobado o no" }),
+    resolucion: z.string().min(5, "La resolución debe estar detallada"),
+    // Campos de recepción — solo obligatorios al aprobar
+    condicion_recibido: z.string().optional(),
+    notas_inspeccion: z.string().optional(),
+  })
+  .refine(
+    (data) => {
+      if (data.aprobado && !data.condicion_recibido) return false;
+      return true;
+    },
+    {
+      message:
+        "Al aprobar una garantía debe indicar la condición de la pieza recibida",
+      path: ["condicion_recibido"],
+    },
+  );

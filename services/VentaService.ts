@@ -419,20 +419,27 @@ export class VentaService {
     id_venta: number,
   ): Promise<{ venta: any; detalles: any[] } | null> {
     const queryVenta = `
-      SELECT v.*, COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente, 
+      SELECT v.*, COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente,
              CONCAT(e.nombre, ' ', e.apellido) as vendedor
       FROM venta v
       LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
       LEFT JOIN empleado e ON v.id_vendedor = e.id_empleado
       WHERE v.id_venta = $1;
     `;
-    // subtotal_linea y monto_iva ahora son columnas GENERATED — siguen
-    // disponibles en SELECT con el mismo nombre, sin cambios para el frontend.
+
+    // tiene_garantia = true si existe al menos un reclamo sobre ese detalle
+    // independientemente del estado (en_revision, aprobada o rechazada).
+    // Así el frontend muestra "Reclamado" en todos los casos.
     const queryDetalles = `
       SELECT dv.id_detalle, dv.id_producto, p.nombre as producto, p.sku, p.garantia_dias,
-             dv.cantidad, dv.precio_unitario, dv.subtotal_linea, dv.monto_iva
-      FROM detalle_venta dv 
-      JOIN producto p ON dv.id_producto = p.id_producto 
+             dv.cantidad, dv.precio_unitario, dv.subtotal_linea, dv.monto_iva,
+             EXISTS (
+               SELECT 1 FROM garantia g
+               WHERE g.id_detalle_venta = dv.id_detalle
+                 AND g.estado IN ('en_revision', 'aprobada', 'rechazada')
+             ) AS tiene_garantia
+      FROM detalle_venta dv
+      JOIN producto p ON dv.id_producto = p.id_producto
       WHERE dv.id_venta = $1;
     `;
 
@@ -449,6 +456,7 @@ export class VentaService {
         subtotal_linea: Number(row.subtotal_linea),
         monto_iva: Number(row.monto_iva),
         garantia_dias: Number(row.garantia_dias),
+        tiene_garantia: row.tiene_garantia === true,
       })),
     };
   }
