@@ -108,19 +108,67 @@ export class EntregaService {
   }
 
   async marcarFallida(id_repartidor: number, data: MarcarEntregaFallidaDTO) {
-    const result = await this.pool.query(
-      `UPDATE pedido_domicilio
-       SET estado = 'fallido', motivo_fallido = $1
-       WHERE id_pedido = $2
-         AND id_repartidor = $3
-         AND estado = 'pendiente'
-       RETURNING id_pedido`,
-      [data.motivo_fallido, data.id_pedido, id_repartidor],
-    );
-    if (result.rows.length === 0)
-      throw new Error(
-        "Pedido no encontrado, no asignado a este repartidor o ya procesado.",
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      // 1. Verificar y bloquear el pedido
+      const pedidoRes = await client.query(
+        `SELECT pd.id_pedido, pd.id_venta, v.id_sucursal
+       FROM pedido_domicilio pd
+       JOIN venta v ON pd.id_venta = v.id_venta
+       WHERE pd.id_pedido = $1
+         AND pd.id_repartidor = $2
+         AND pd.estado = 'pendiente'
+       FOR UPDATE`,
+        [data.id_pedido, id_repartidor],
       );
+
+      if (pedidoRes.rows.length === 0)
+        throw new Error(
+          "Pedido no encontrado, no asignado a este repartidor o ya procesado.",
+        );
+
+      const { id_venta, id_sucursal } = pedidoRes.rows[0];
+
+      // 2. Marcar pedido como fallido (con fecha_entrega = NOW() para que
+      //    aparezca en el historial del repartidor — Bug #1)
+      await client.query(
+        `UPDATE pedido_domicilio
+       SET estado = 'fallido',
+           motivo_fallido = $1,
+           fecha_entrega = NOW(),
+           updated_at = NOW()
+       WHERE id_pedido = $2`,
+        [data.motivo_fallido, data.id_pedido],
+      );
+
+      // 3. Anular la venta — Bug #2
+      await client.query(
+        `UPDATE venta
+       SET estado = 'anulada', updated_at = NOW()
+       WHERE id_venta = $1`,
+        [id_venta],
+      );
+
+      // 4. Revertir stock — Bug #3
+      await client.query(
+        `UPDATE inventario_sucursal i
+       SET cantidad_actual = i.cantidad_actual + dv.cantidad
+       FROM detalle_venta dv
+       WHERE dv.id_venta = $1
+         AND i.id_producto = dv.id_producto
+         AND i.id_sucursal = $2`,
+        [id_venta, id_sucursal],
+      );
+
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async obtenerComprobante(id_pago: number, id_repartidor: number) {
