@@ -60,6 +60,8 @@ export class EntregaService {
       if (pedido.estado !== "pendiente")
         throw new Error("El pedido ya fue procesado previamente.");
 
+      let id_pago_generado = null; // Guardará el ID para retornarlo
+
       if (pedido.pago_contra_entrega) {
         if (
           data.monto_cobrado === undefined ||
@@ -75,27 +77,28 @@ export class EntregaService {
           [pedido.id_venta],
         );
 
-        // ── PUNTO 5: uuid_factura ya no existe en pago.
-        //    Si se necesita factura, se inserta en la tabla factura por separado.
-        //    El pago de repartidor queda sin uuid_factura (sin cambios visibles).
-        await client.query(
+        // Agregamos RETURNING id_pago
+        const pagoInsert = await client.query(
           `INSERT INTO pago
              (id_venta, id_cajero, id_repartidor, metodo_pago, monto, referencia)
-           VALUES ($1, NULL, $2, 'efectivo', $3, 'Cobro en ruta por repartidor')`,
+           VALUES ($1, NULL, $2, 'efectivo', $3, 'Cobro en ruta por repartidor')
+           RETURNING id_pago`,
           [pedido.id_venta, id_repartidor, data.monto_cobrado],
         );
+        id_pago_generado = pagoInsert.rows[0].id_pago;
       }
 
       await client.query(
         `UPDATE pedido_domicilio
-         SET estado = 'entregado',
-             fecha_entrega = NOW(),
-             monto_cobrado_contra_entrega = $1
+         SET estado = 'entregado', fecha_entrega = NOW(), monto_cobrado_contra_entrega = $1
          WHERE id_pedido = $2`,
         [data.monto_cobrado || 0, data.id_pedido],
       );
 
       await client.query("COMMIT");
+
+      // Retornamos el id_pago para que el frontend pueda abrir el ticket
+      return { id_pago: id_pago_generado };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -140,15 +143,17 @@ export class EntregaService {
          p.id_pago, p.id_venta, p.fecha_pago, p.metodo_pago, p.monto, p.referencia,
          COALESCE(c.nombre_razon_social, 'Consumidor Final') AS cliente,
          COALESCE(c.nit, 'CF')                               AS nit,
-         c.direccion                                          AS direccion_cliente,
-         CONCAT(e.nombre, ' ', e.apellido)                   AS cajero,
+         c.direccion                                         AS direccion_cliente,
+         CONCAT(ec.nombre, ' ', ec.apellido)                 AS cajero,
+         CONCAT(er.nombre, ' ', er.apellido)                 AS repartidor,
          v.subtotal,
          COALESCE(v.descuento_monto, 0)                      AS descuento_monto,
          v.total
        FROM pago p
        JOIN venta v ON p.id_venta = v.id_venta
        LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
-       LEFT JOIN empleado e ON p.id_cajero = e.id_empleado
+       LEFT JOIN empleado ec ON p.id_cajero = ec.id_empleado
+       LEFT JOIN empleado er ON p.id_repartidor = er.id_empleado
        WHERE p.id_pago = $1`,
       [id_pago],
     );
@@ -177,6 +182,7 @@ export class EntregaService {
       nit: pago.nit,
       direccion_cliente: pago.direccion_cliente,
       cajero: pago.cajero,
+      repartidor: pago.repartidor?.trim() || null,
       subtotal: Number(pago.subtotal ?? pago.total),
       descuento_monto: Number(pago.descuento_monto),
       total: Number(pago.total),
