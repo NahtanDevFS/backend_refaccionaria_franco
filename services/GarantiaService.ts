@@ -11,9 +11,10 @@ export class GarantiaService {
       await client.query("BEGIN");
 
       const detRes = await client.query(
-        `SELECT dv.cantidad as cantidad_comprada, v.created_at as fecha_compra, p.garantia_dias, p.id_producto
+        `SELECT dv.cantidad as cantidad_comprada, v.created_at as fecha_compra,
+                p.garantia_dias, p.id_producto
          FROM detalle_venta dv
-         JOIN venta v ON dv.id_venta = v.id_venta
+         JOIN venta v    ON dv.id_venta    = v.id_venta
          JOIN producto p ON dv.id_producto = p.id_producto
          WHERE dv.id_detalle = $1`,
         [data.id_detalle_venta],
@@ -21,17 +22,17 @@ export class GarantiaService {
 
       if (detRes.rows.length === 0)
         throw new Error("Detalle de venta no encontrado");
+
       const { cantidad_comprada, fecha_compra, garantia_dias } = detRes.rows[0];
 
-      if (data.cantidad > Number(cantidad_comprada)) {
+      if (data.cantidad > Number(cantidad_comprada))
         throw new Error("La cantidad reclamada supera la cantidad comprada.");
-      }
 
-      // Bloquea si ya existe cualquier reclamo previo sobre este detalle
-      // (aprobado, rechazado o en revisión) — el cliente solo tiene un intento.
       const reclamosPrevios = await client.query(
-        `SELECT COALESCE(SUM(cantidad), 0) as total_reclamado FROM garantia
-         WHERE id_detalle_venta = $1 AND estado IN ('en_revision', 'aprobada', 'rechazada')`,
+        `SELECT COALESCE(SUM(cantidad), 0) as total_reclamado
+         FROM garantia
+         WHERE id_detalle_venta = $1
+           AND estado IN ('en_revision', 'aprobada', 'rechazada')`,
         [data.id_detalle_venta],
       );
 
@@ -46,11 +47,10 @@ export class GarantiaService {
 
       const fechaLimite = new Date(fecha_compra);
       fechaLimite.setDate(fechaLimite.getDate() + garantia_dias);
-      if (new Date() > fechaLimite) {
+      if (new Date() > fechaLimite)
         throw new Error(
           `El plazo de garantía de ${garantia_dias} días ha expirado.`,
         );
-      }
 
       const insertRes = await client.query(
         `INSERT INTO garantia (id_detalle_venta, cantidad, motivo_reclamo, estado)
@@ -71,12 +71,14 @@ export class GarantiaService {
   /**
    * Resuelve una garantía (aprobación o rechazo).
    *
-   * FLUJO NUEVO:
-   * - Si se APRUEBA: en la misma transacción se descuenta el inventario
-   *   y se registra la recepción física de la pieza dañada (el supervisor
-   *   tiene la pieza enfrente cuando toma la decisión).
-   * - Si se RECHAZA: solo se actualiza el estado. El cliente se va con su
-   *   pieza. No hay recepción física.
+   * FLUJO APROBADO:
+   *   1. Descuenta inventario_sucursal del repuesto de reemplazo.
+   *   2. Registra movimiento_inventario (salida_garantia).
+   *   3. Consume lotes FIFO con fn_consumir_lotes_fifo().
+   *   4. Registra la recepción física de la pieza dañada en retorno_garantia.
+   *
+   * FLUJO RECHAZADO:
+   *   Solo actualiza el estado. Sin movimiento de inventario.
    */
   async resolverGarantia(data: ResolverGarantiaDTO): Promise<void> {
     const client = await this.pool.connect();
@@ -87,12 +89,13 @@ export class GarantiaService {
         `SELECT g.estado, g.cantidad, dv.id_producto, v.id_sucursal
          FROM garantia g
          JOIN detalle_venta dv ON g.id_detalle_venta = dv.id_detalle
-         JOIN venta v ON dv.id_venta = v.id_venta
+         JOIN venta v          ON dv.id_venta        = v.id_venta
          WHERE g.id_garantia = $1 FOR UPDATE`,
         [data.id_garantia],
       );
 
       if (garRes.rows.length === 0) throw new Error("Garantía no encontrada");
+
       const garantia = garRes.rows[0];
       if (garantia.estado !== "en_revision")
         throw new Error("La garantía ya fue resuelta.");
@@ -101,22 +104,70 @@ export class GarantiaService {
 
       await client.query(
         `UPDATE garantia
-            SET estado = $1, resolucion = $2, id_supervisor_aprueba = $3
-          WHERE id_garantia = $4`,
+         SET estado = $1, resolucion = $2, id_supervisor_aprueba = $3
+         WHERE id_garantia = $4`,
         [nuevoEstado, data.resolucion, data.id_supervisor, data.id_garantia],
       );
 
       if (data.aprobado) {
-        // 1. Descontar inventario de la sucursal
-        await client.query(
-          `UPDATE inventario_sucursal
-              SET cantidad_actual = cantidad_actual - $1
-            WHERE id_producto = $2 AND id_sucursal = $3`,
-          [garantia.cantidad, garantia.id_producto, garantia.id_sucursal],
+        // 1. Verificar stock y descontar inventario_sucursal (sin cambios)
+        const invRes = await client.query(
+          `SELECT id_inventario, cantidad_actual
+           FROM inventario_sucursal
+           WHERE id_producto = $1 AND id_sucursal = $2
+           FOR UPDATE`,
+          [garantia.id_producto, garantia.id_sucursal],
         );
 
-        // 2. Registrar la recepción física de la pieza dañada
-        //    condicion_recibido y notas_inspeccion vienen del payload
+        if (
+          invRes.rows.length === 0 ||
+          Number(invRes.rows[0].cantidad_actual) < garantia.cantidad
+        ) {
+          throw new Error(
+            "Stock insuficiente para entregar el repuesto de garantía.",
+          );
+        }
+
+        const id_inventario = invRes.rows[0].id_inventario;
+        const nueva_cantidad =
+          Number(invRes.rows[0].cantidad_actual) - Number(garantia.cantidad);
+
+        await client.query(
+          `UPDATE inventario_sucursal
+           SET cantidad_actual = $1
+           WHERE id_inventario = $2`,
+          [nueva_cantidad, id_inventario],
+        );
+
+        // 2. Registrar movimiento de salida por garantía
+        const movRes = await client.query(
+          `INSERT INTO movimiento_inventario
+             (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante,
+              id_referencia, tabla_referencia, motivo)
+           VALUES ($1, $2, 'salida_garantia', $3, $4, $5, 'garantia',
+                   'Reemplazo físico por garantía aprobada')
+           RETURNING id_movimiento`,
+          [
+            id_inventario,
+            data.id_supervisor,
+            garantia.cantidad,
+            nueva_cantidad,
+            data.id_garantia,
+          ],
+        );
+
+        const id_movimiento = movRes.rows[0].id_movimiento;
+
+        // ── FIFO: consumir lotes del repuesto entregado como reemplazo ────────
+        await client.query(`SELECT fn_consumir_lotes_fifo($1, $2, $3, $4)`, [
+          garantia.id_producto,
+          garantia.id_sucursal,
+          garantia.cantidad,
+          id_movimiento,
+        ]);
+        // ──────────────────────────────────────────────────────────────────────
+
+        // 3. Registrar la recepción física de la pieza dañada (sin cambios)
         await client.query(
           `INSERT INTO retorno_garantia
              (id_garantia, id_empleado_recibe, condicion_recibido, notas_inspeccion)
@@ -139,9 +190,8 @@ export class GarantiaService {
     }
   }
 
-  // --- GETTERS PARA LAS PESTAÑAS DEL FRONTEND ---
+  // ── GETTERS — sin cambios ──────────────────────────────────────────────────
 
-  // Pestaña 1: Solicitudes pendientes de resolver
   async obtenerPendientes(id_sucursal: number): Promise<any[]> {
     const query = `
       SELECT g.id_garantia, g.cantidad, g.motivo_reclamo, g.fecha_solicitud, g.estado,
@@ -150,9 +200,9 @@ export class GarantiaService {
              COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente
       FROM garantia g
       JOIN detalle_venta dv ON g.id_detalle_venta = dv.id_detalle
-      JOIN venta v ON dv.id_venta = v.id_venta
-      JOIN producto p ON dv.id_producto = p.id_producto
-      LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
+      JOIN venta v          ON dv.id_venta        = v.id_venta
+      JOIN producto p       ON dv.id_producto     = p.id_producto
+      LEFT JOIN cliente c   ON v.id_cliente       = c.id_cliente
       WHERE v.id_sucursal = $1 AND g.estado = 'en_revision'
       ORDER BY g.fecha_solicitud ASC
     `;
@@ -160,19 +210,19 @@ export class GarantiaService {
     return res.rows.map((row) => ({ ...row, cantidad: Number(row.cantidad) }));
   }
 
-  // Pestaña 2: Pendientes de Inspección Técnica (piezas recibidas, sin dictamen)
   async obtenerPendientesInspeccion(id_sucursal: number): Promise<any[]> {
     const query = `
-      SELECT rg.id_retorno, rg.condicion_recibido, rg.notas_inspeccion, rg.created_at as fecha_ingreso,
+      SELECT rg.id_retorno, rg.condicion_recibido, rg.notas_inspeccion,
+             rg.created_at as fecha_ingreso,
              g.id_garantia, g.cantidad,
              p.nombre as producto, p.sku,
              e.nombre as recibio_nombre
       FROM retorno_garantia rg
-      JOIN garantia g ON rg.id_garantia = g.id_garantia
+      JOIN garantia g     ON rg.id_garantia       = g.id_garantia
       JOIN detalle_venta dv ON g.id_detalle_venta = dv.id_detalle
-      JOIN venta v ON dv.id_venta = v.id_venta
-      JOIN producto p ON dv.id_producto = p.id_producto
-      JOIN empleado e ON rg.id_empleado_recibe = e.id_empleado
+      JOIN venta v          ON dv.id_venta        = v.id_venta
+      JOIN producto p       ON dv.id_producto     = p.id_producto
+      JOIN empleado e       ON rg.id_empleado_recibe = e.id_empleado
       WHERE v.id_sucursal = $1 AND rg.estado = 'pendiente_inspeccion'
       ORDER BY rg.created_at ASC
     `;
@@ -192,14 +242,15 @@ export class GarantiaService {
       await client.query("BEGIN");
 
       const inspRes = await client.query(
-        `INSERT INTO inspeccion_retorno (id_retorno, id_empleado_inspecciona, resultado, observaciones, destino)
-         VALUES ($1, $2, $3, $4, $5) RETURNING id_inspeccion;`,
+        `INSERT INTO inspeccion_retorno
+           (id_retorno, id_empleado_inspecciona, resultado, observaciones, destino)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id_inspeccion`,
         [id_retorno, id_tecnico, resultado, observaciones, destino],
       );
       const id_inspeccion = inspRes.rows[0].id_inspeccion;
 
       await client.query(
-        "UPDATE retorno_garantia SET estado = 'cerrado' WHERE id_retorno = $1",
+        `UPDATE retorno_garantia SET estado = 'cerrado' WHERE id_retorno = $1`,
         [id_retorno],
       );
 
@@ -207,17 +258,22 @@ export class GarantiaService {
         const infoQuery = await client.query(
           `SELECT dv.id_producto, v.id_sucursal, g.cantidad
            FROM retorno_garantia rg
-           JOIN garantia g ON rg.id_garantia = g.id_garantia
-           JOIN detalle_venta dv ON g.id_detalle_venta = dv.id_detalle
-           JOIN venta v ON dv.id_venta = v.id_venta
+           JOIN garantia g       ON rg.id_garantia       = g.id_garantia
+           JOIN detalle_venta dv ON g.id_detalle_venta   = dv.id_detalle
+           JOIN venta v          ON dv.id_venta          = v.id_venta
            WHERE rg.id_retorno = $1`,
           [id_retorno],
         );
         const { id_producto, id_sucursal, cantidad } = infoQuery.rows[0];
 
+        // La pieza dañada aprobada para reventa entra como lote_reacondicionado.
+        // No toca lote_inventario porque los reacondicionados tienen su propio
+        // flujo de precios y no forman parte del stock FIFO normal.
         await client.query(
-          `INSERT INTO lote_reacondicionado (id_inspeccion, id_sucursal, id_producto, cantidad, precio_venta_reac)
-           VALUES ($1, $2, $3, $4, (SELECT precio_venta * 0.5 FROM producto WHERE id_producto = $3))`,
+          `INSERT INTO lote_reacondicionado
+             (id_inspeccion, id_sucursal, id_producto, cantidad, precio_venta_reac)
+           VALUES ($1, $2, $3, $4,
+             (SELECT precio_venta * 0.5 FROM producto WHERE id_producto = $3))`,
           [id_inspeccion, id_sucursal, id_producto, cantidad],
         );
       }
@@ -232,7 +288,6 @@ export class GarantiaService {
     }
   }
 
-  // Historial completo (solo garantías cerradas: rechazadas o con inspección finalizada)
   async obtenerHistorial(
     id_sucursal: number,
     search?: string,
@@ -246,13 +301,13 @@ export class GarantiaService {
     const values: any[] = [id_sucursal];
     let paramIndex = 1;
 
-    // Condición base: de esta sucursal, y que ya estén cerradas (rechazadas o inspeccionadas)
-    let whereClause = `WHERE v.id_sucursal = $1 AND (g.estado = 'rechazada' OR ir.id_inspeccion IS NOT NULL)`;
+    let whereClause = `WHERE v.id_sucursal = $1
+      AND (g.estado = 'rechazada' OR ir.id_inspeccion IS NOT NULL)`;
 
     if (search) {
       paramIndex++;
-      // Busca en nombre del producto, SKU o ID de garantía
-      whereClause += ` AND (p.nombre ILIKE $${paramIndex} OR p.sku ILIKE $${paramIndex} OR g.id_garantia::text ILIKE $${paramIndex})`;
+      whereClause += ` AND (p.nombre ILIKE $${paramIndex} OR p.sku ILIKE $${paramIndex}
+        OR g.id_garantia::text ILIKE $${paramIndex})`;
       values.push(`%${search}%`);
     }
 
@@ -274,32 +329,30 @@ export class GarantiaService {
       values.push(fechaFin);
     }
 
-    // Query para obtener el total de registros (para la paginación)
     const countQuery = `
       SELECT COUNT(*)
       FROM garantia g
       JOIN detalle_venta dv ON g.id_detalle_venta = dv.id_detalle
-      JOIN producto p ON dv.id_producto = p.id_producto
-      JOIN venta v ON dv.id_venta = v.id_venta
-      LEFT JOIN retorno_garantia rg ON g.id_garantia = rg.id_garantia
-      LEFT JOIN inspeccion_retorno ir ON rg.id_retorno = ir.id_retorno
+      JOIN producto p       ON dv.id_producto     = p.id_producto
+      JOIN venta v          ON dv.id_venta        = v.id_venta
+      LEFT JOIN retorno_garantia rg    ON g.id_garantia  = rg.id_garantia
+      LEFT JOIN inspeccion_retorno ir  ON rg.id_retorno  = ir.id_retorno
       ${whereClause};
     `;
 
-    // Query para obtener los datos paginados
     const dataQuery = `
       SELECT
-          g.id_garantia, g.fecha_solicitud, g.estado as estado_garantia, g.motivo_reclamo,
-          p.sku, p.nombre as producto,
-          rg.condicion_recibido, rg.created_at as fecha_recepcion,
-          ir.resultado as dictamen, ir.destino, ir.fecha_inspeccion,
-          lr.id_lote, lr.estado as estado_lote
+        g.id_garantia, g.fecha_solicitud, g.estado as estado_garantia, g.motivo_reclamo,
+        p.sku, p.nombre as producto,
+        rg.condicion_recibido, rg.created_at as fecha_recepcion,
+        ir.resultado as dictamen, ir.destino, ir.fecha_inspeccion,
+        lr.id_lote, lr.estado as estado_lote
       FROM garantia g
       JOIN detalle_venta dv ON g.id_detalle_venta = dv.id_detalle
-      JOIN producto p ON dv.id_producto = p.id_producto
-      JOIN venta v ON dv.id_venta = v.id_venta
-      LEFT JOIN retorno_garantia rg ON g.id_garantia = rg.id_garantia
-      LEFT JOIN inspeccion_retorno ir ON rg.id_retorno = ir.id_retorno
+      JOIN producto p       ON dv.id_producto     = p.id_producto
+      JOIN venta v          ON dv.id_venta        = v.id_venta
+      LEFT JOIN retorno_garantia rg    ON g.id_garantia  = rg.id_garantia
+      LEFT JOIN inspeccion_retorno ir  ON rg.id_retorno  = ir.id_retorno
       LEFT JOIN lote_reacondicionado lr ON ir.id_inspeccion = lr.id_inspeccion
       ${whereClause}
       ORDER BY g.fecha_solicitud DESC, g.id_garantia DESC

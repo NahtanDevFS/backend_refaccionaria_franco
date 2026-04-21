@@ -5,10 +5,6 @@ import { EmitirDespachoDTO, AjusteInventarioDTO } from "../dtos/BodegaDTO";
 export class BodegaService {
   constructor(private readonly pool: Pool) {}
 
-  // ── PUNTO 3: precio_costo ya no existe en producto.
-  //    Ahora viene de producto_proveedor WHERE es_principal = TRUE.
-  //    Se usa un LEFT JOIN LATERAL para obtener el costo del proveedor
-  //    principal sin romper productos que aún no tengan proveedor asignado.
   async obtenerInventarioLocal(id_sucursal: number, filtros?: any) {
     let query = `
       SELECT 
@@ -17,8 +13,16 @@ export class BodegaService {
         c.nombre  AS categoria,
         m.nombre  AS marca_repuesto,
         p.precio_venta,
-        -- Costo desde proveedor principal (PUNTO 3)
-        pp_costo.precio_costo AS costo,
+        -- ── Costo promedio ponderado de lotes activos ──────────────────────
+        -- Refleja el costo real del stock disponible hoy. Si no hay lotes
+        -- activos (producto sin stock), cae al costo del proveedor principal.
+        COALESCE(
+          lotes_costo.costo_promedio_ponderado,
+          pp_costo.precio_costo,
+          0
+        ) AS costo,
+        -- ── Cantidad de lotes activos (para el indicador expandible en UI) ─
+        COALESCE(lotes_costo.total_lotes, 0) AS total_lotes,
         (i.cantidad_actual <= i.punto_reorden) AS requiere_reorden,
         (SELECT COALESCE(SUM(i2.cantidad_actual), 0)
          FROM inventario_sucursal i2
@@ -42,7 +46,7 @@ export class BodegaService {
       JOIN producto p ON i.id_producto = p.id_producto
       LEFT JOIN categoria_producto c ON p.id_categoria = c.id_categoria
       LEFT JOIN marca m ON p.id_marca = m.id_marca
-      -- JOIN LATERAL para obtener precio_costo del proveedor principal
+      -- Costo del proveedor principal (fallback cuando no hay lotes activos)
       LEFT JOIN LATERAL (
         SELECT precio_costo
         FROM producto_proveedor
@@ -51,6 +55,20 @@ export class BodegaService {
           AND activo = TRUE
         LIMIT 1
       ) pp_costo ON true
+      -- Costo promedio ponderado y conteo de lotes activos
+      LEFT JOIN LATERAL (
+        SELECT
+          ROUND(
+            SUM(l.cantidad_actual * l.costo_unitario) / NULLIF(SUM(l.cantidad_actual), 0),
+            2
+          ) AS costo_promedio_ponderado,
+          COUNT(*) AS total_lotes
+        FROM lote_inventario l
+        WHERE l.id_producto = p.id_producto
+          AND l.id_sucursal = i.id_sucursal
+          AND l.agotado     = FALSE
+          AND l.activo      = TRUE
+      ) lotes_costo ON true
       WHERE i.id_sucursal = $1
     `;
 
@@ -94,8 +112,39 @@ export class BodegaService {
       punto_reorden: Number(row.punto_reorden),
       stock_otras_sucursales: Number(row.stock_otras_sucursales),
       precio_venta: Number(row.precio_venta || 0),
-      // Si no hay proveedor principal asignado, costo = 0
       costo: Number(row.costo || 0),
+      total_lotes: Number(row.total_lotes || 0),
+    }));
+  }
+
+  // ── Lotes activos de un producto en una sucursal ───────────────────────────
+  // Endpoint lazy: solo se llama cuando el usuario expande el panel de lotes.
+  // No se incluye en el listado general para no penalizar la carga inicial.
+  async obtenerLotesDeProducto(id_producto: number, id_sucursal: number) {
+    const query = `
+      SELECT
+        id_lote,
+        cantidad_actual,
+        costo_unitario,
+        fecha_ingreso,
+        -- Identifica el lote de apertura (stock histórico sin trazabilidad real)
+        (DATE(fecha_ingreso) = '2026-04-20') AS es_apertura
+      FROM lote_inventario
+      WHERE id_producto = $1
+        AND id_sucursal = $2
+        AND agotado     = FALSE
+        AND activo      = TRUE
+      ORDER BY fecha_ingreso ASC;
+    `;
+
+    const result = await this.pool.query(query, [id_producto, id_sucursal]);
+
+    return result.rows.map((row) => ({
+      id_lote: Number(row.id_lote),
+      cantidad_actual: Number(row.cantidad_actual),
+      costo_unitario: Number(row.costo_unitario),
+      fecha_ingreso: row.fecha_ingreso as Date,
+      es_apertura: row.es_apertura as boolean,
     }));
   }
 
@@ -146,13 +195,19 @@ export class BodegaService {
           `UPDATE inventario_sucursal SET cantidad_actual = $1 WHERE id_inventario = $2`,
           [nueva_cantidad, id_inventario],
         );
+
         await client.query(
           `INSERT INTO detalle_despacho (id_despacho, id_producto, cantidad) VALUES ($1, $2, $3)`,
           [id_despacho, det.id_producto, det.cantidad],
         );
-        await client.query(
-          `INSERT INTO movimiento_inventario (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante, id_referencia, tabla_referencia, motivo)
-           VALUES ($1, $2, 'salida_traslado', $3, $4, $5, 'nota_despacho', 'Envío de mercadería a otra sucursal')`,
+
+        const movRes = await client.query(
+          `INSERT INTO movimiento_inventario
+             (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante,
+              id_referencia, tabla_referencia, motivo)
+           VALUES ($1, $2, 'salida_traslado', $3, $4, $5, 'nota_despacho',
+                   'Envío de mercadería a otra sucursal')
+           RETURNING id_movimiento`,
           [
             id_inventario,
             id_usuario,
@@ -161,6 +216,13 @@ export class BodegaService {
             id_despacho,
           ],
         );
+
+        await client.query(`SELECT fn_consumir_lotes_fifo($1, $2, $3, $4)`, [
+          det.id_producto,
+          id_sucursal_origen,
+          det.cantidad,
+          movRes.rows[0].id_movimiento,
+        ]);
       }
 
       await client.query("COMMIT");
@@ -199,7 +261,8 @@ export class BodegaService {
       await client.query("BEGIN");
 
       const notaRes = await client.query(
-        `SELECT estado FROM nota_despacho WHERE id_despacho = $1 AND id_sucursal_destino = $2 FOR UPDATE`,
+        `SELECT estado, id_sucursal_origen FROM nota_despacho
+         WHERE id_despacho = $1 AND id_sucursal_destino = $2 FOR UPDATE`,
         [id_despacho, id_sucursal_destino],
       );
       if (notaRes.rows.length === 0)
@@ -209,8 +272,11 @@ export class BodegaService {
       if (notaRes.rows[0].estado !== "en_ruta")
         throw new Error("El despacho ya fue procesado");
 
+      const id_sucursal_origen = Number(notaRes.rows[0].id_sucursal_origen);
+
       await client.query(
-        `UPDATE nota_despacho SET estado = 'recibido', fecha_recepcion = NOW() WHERE id_despacho = $1`,
+        `UPDATE nota_despacho SET estado = 'recibido', fecha_recepcion = NOW()
+         WHERE id_despacho = $1`,
         [id_despacho],
       );
 
@@ -225,7 +291,7 @@ export class BodegaService {
         const invRes = await client.query(
           `INSERT INTO inventario_sucursal (id_producto, id_sucursal, cantidad_actual)
            VALUES ($1, $2, $3)
-           ON CONFLICT (id_producto, id_sucursal) 
+           ON CONFLICT (id_producto, id_sucursal)
            DO UPDATE SET cantidad_actual = inventario_sucursal.cantidad_actual + EXCLUDED.cantidad_actual
            RETURNING id_inventario, cantidad_actual`,
           [det.id_producto, id_sucursal_destino, cantidadRecibida],
@@ -235,14 +301,43 @@ export class BodegaService {
         const nueva_cantidad = Number(invRes.rows[0].cantidad_actual);
 
         await client.query(
-          `INSERT INTO movimiento_inventario (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante, id_referencia, tabla_referencia, motivo)
-           VALUES ($1, $2, 'entrada_traslado', $3, $4, $5, 'nota_despacho', 'Recepción de mercadería desde otra sucursal')`,
+          `INSERT INTO movimiento_inventario
+             (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante,
+              id_referencia, tabla_referencia, motivo)
+           VALUES ($1, $2, 'entrada_traslado', $3, $4, $5, 'nota_despacho',
+                   'Recepción de mercadería desde otra sucursal')`,
           [
             id_inventario,
             id_usuario,
             cantidadRecibida,
             nueva_cantidad,
             id_despacho,
+          ],
+        );
+
+        const costoRes = await client.query(
+          `SELECT COALESCE(
+             (SELECT costo_unitario FROM lote_inventario
+              WHERE id_producto = $1 AND id_sucursal = $2
+              ORDER BY fecha_ingreso ASC LIMIT 1),
+             (SELECT precio_costo FROM producto_proveedor
+              WHERE id_producto = $1 AND es_principal = TRUE AND activo = TRUE LIMIT 1),
+             0.00
+           ) AS costo_unitario`,
+          [det.id_producto, id_sucursal_origen],
+        );
+
+        await client.query(
+          `INSERT INTO lote_inventario
+             (id_producto, id_sucursal, id_despacho,
+              costo_unitario, cantidad_inicial, cantidad_actual, fecha_ingreso)
+           VALUES ($1, $2, $3, $4, $5, $5, NOW())`,
+          [
+            det.id_producto,
+            id_sucursal_destino,
+            id_despacho,
+            Number(costoRes.rows[0].costo_unitario),
+            cantidadRecibida,
           ],
         );
       }
@@ -274,7 +369,7 @@ export class BodegaService {
         throw new Error("Producto no registrado en esta sucursal");
 
       const id_inventario = invRes.rows[0].id_inventario;
-      let cantidad_actual = Number(invRes.rows[0].cantidad_actual);
+      const cantidad_actual = Number(invRes.rows[0].cantidad_actual);
 
       let nueva_cantidad = cantidad_actual;
       if (data.tipo === "ajuste_positivo") nueva_cantidad += data.cantidad;
@@ -289,9 +384,12 @@ export class BodegaService {
         `UPDATE inventario_sucursal SET cantidad_actual = $1 WHERE id_inventario = $2`,
         [nueva_cantidad, id_inventario],
       );
-      await client.query(
-        `INSERT INTO movimiento_inventario (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante, motivo)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+
+      const movRes = await client.query(
+        `INSERT INTO movimiento_inventario
+           (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante, motivo)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id_movimiento`,
         [
           id_inventario,
           id_usuario,
@@ -301,6 +399,39 @@ export class BodegaService {
           data.motivo,
         ],
       );
+
+      const id_movimiento = movRes.rows[0].id_movimiento;
+
+      if (data.tipo === "ajuste_negativo") {
+        await client.query(`SELECT fn_consumir_lotes_fifo($1, $2, $3, $4)`, [
+          data.id_producto,
+          id_sucursal,
+          data.cantidad,
+          id_movimiento,
+        ]);
+      } else {
+        const costoRes = await client.query(
+          `SELECT COALESCE(
+             (SELECT precio_costo FROM producto_proveedor
+              WHERE id_producto = $1 AND es_principal = TRUE AND activo = TRUE LIMIT 1),
+             0.00
+           ) AS costo_unitario`,
+          [data.id_producto],
+        );
+
+        await client.query(
+          `INSERT INTO lote_inventario
+             (id_producto, id_sucursal,
+              costo_unitario, cantidad_inicial, cantidad_actual, fecha_ingreso)
+           VALUES ($1, $2, $3, $4, $4, NOW())`,
+          [
+            data.id_producto,
+            id_sucursal,
+            Number(costoRes.rows[0].costo_unitario),
+            data.cantidad,
+          ],
+        );
+      }
 
       await client.query("COMMIT");
     } catch (error) {

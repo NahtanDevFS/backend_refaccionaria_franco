@@ -12,13 +12,37 @@ export class BodegaController {
   obtenerInventario = async (req: Request, res: Response): Promise<void> => {
     try {
       const id_sucursal = req.usuario!.id_sucursal;
-      const filtros = req.query; // Capturamos los query params de la URL
-
+      const filtros = req.query;
       const inventario = await this.bodegaService.obtenerInventarioLocal(
         id_sucursal,
         filtros,
       );
       res.status(200).json({ success: true, data: inventario });
+    } catch (error: any) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  };
+
+  // GET /bodega/lotes/:id_producto
+  // Devuelve los lotes activos de un producto en la sucursal del usuario.
+  // Llamada lazy desde el frontend al expandir el panel de lotes.
+  obtenerLotes = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const id_sucursal = req.usuario!.id_sucursal;
+      const id_producto = Number(req.params.id_producto);
+
+      if (isNaN(id_producto) || id_producto <= 0) {
+        res
+          .status(400)
+          .json({ success: false, message: "ID de producto inválido." });
+        return;
+      }
+
+      const lotes = await this.bodegaService.obtenerLotesDeProducto(
+        id_producto,
+        id_sucursal,
+      );
+      res.status(200).json({ success: true, data: lotes });
     } catch (error: any) {
       res.status(500).json({ success: false, message: error.message });
     }
@@ -89,9 +113,10 @@ export class BodegaController {
         id_usuario,
         payload,
       );
-      res
-        .status(200)
-        .json({ success: true, message: "Ajuste registrado correctamente." });
+      res.status(200).json({
+        success: true,
+        message: "Ajuste registrado exitosamente.",
+      });
     } catch (error: any) {
       const errorMsg = error.errors
         ? error.errors.map((e: any) => e.message).join(", ")

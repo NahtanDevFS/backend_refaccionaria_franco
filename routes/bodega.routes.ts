@@ -10,6 +10,7 @@ export function crearBodegaRouter(dbPool: Pool): Router {
   const controller = new BodegaController(service);
 
   router.get("/inventario", controller.obtenerInventario);
+  router.get("/lotes/:id_producto", controller.obtenerLotes);
   router.get("/recepciones", controller.obtenerRecepciones);
   router.post("/despacho", controller.emitirDespacho);
   router.post("/recepcion/:id", controller.confirmarRecepcion);
