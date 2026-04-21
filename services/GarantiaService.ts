@@ -233,8 +233,61 @@ export class GarantiaService {
   }
 
   // Historial completo (solo garantías cerradas: rechazadas o con inspección finalizada)
-  async obtenerHistorial(id_sucursal: number): Promise<any[]> {
-    const query = `
+  async obtenerHistorial(
+    id_sucursal: number,
+    search?: string,
+    estado?: string,
+    fechaInicio?: string,
+    fechaFin?: string,
+    page: number = 1,
+    limit: number = 10,
+  ): Promise<{ data: any[]; total: number }> {
+    const offset = (page - 1) * limit;
+    const values: any[] = [id_sucursal];
+    let paramIndex = 1;
+
+    // Condición base: de esta sucursal, y que ya estén cerradas (rechazadas o inspeccionadas)
+    let whereClause = `WHERE v.id_sucursal = $1 AND (g.estado = 'rechazada' OR ir.id_inspeccion IS NOT NULL)`;
+
+    if (search) {
+      paramIndex++;
+      // Busca en nombre del producto, SKU o ID de garantía
+      whereClause += ` AND (p.nombre ILIKE $${paramIndex} OR p.sku ILIKE $${paramIndex} OR g.id_garantia::text ILIKE $${paramIndex})`;
+      values.push(`%${search}%`);
+    }
+
+    if (estado) {
+      paramIndex++;
+      whereClause += ` AND g.estado = $${paramIndex}`;
+      values.push(estado);
+    }
+
+    if (fechaInicio) {
+      paramIndex++;
+      whereClause += ` AND g.fecha_solicitud >= $${paramIndex}`;
+      values.push(fechaInicio);
+    }
+
+    if (fechaFin) {
+      paramIndex++;
+      whereClause += ` AND g.fecha_solicitud <= $${paramIndex}`;
+      values.push(fechaFin);
+    }
+
+    // Query para obtener el total de registros (para la paginación)
+    const countQuery = `
+      SELECT COUNT(*)
+      FROM garantia g
+      JOIN detalle_venta dv ON g.id_detalle_venta = dv.id_detalle
+      JOIN producto p ON dv.id_producto = p.id_producto
+      JOIN venta v ON dv.id_venta = v.id_venta
+      LEFT JOIN retorno_garantia rg ON g.id_garantia = rg.id_garantia
+      LEFT JOIN inspeccion_retorno ir ON rg.id_retorno = ir.id_retorno
+      ${whereClause};
+    `;
+
+    // Query para obtener los datos paginados
+    const dataQuery = `
       SELECT
           g.id_garantia, g.fecha_solicitud, g.estado as estado_garantia, g.motivo_reclamo,
           p.sku, p.nombre as producto,
@@ -248,13 +301,16 @@ export class GarantiaService {
       LEFT JOIN retorno_garantia rg ON g.id_garantia = rg.id_garantia
       LEFT JOIN inspeccion_retorno ir ON rg.id_retorno = ir.id_retorno
       LEFT JOIN lote_reacondicionado lr ON ir.id_inspeccion = lr.id_inspeccion
-      WHERE v.id_sucursal = $1
-        AND (g.estado = 'rechazada' OR ir.id_inspeccion IS NOT NULL)
-      ORDER BY g.fecha_solicitud DESC
-      LIMIT 100;
+      ${whereClause}
+      ORDER BY g.fecha_solicitud DESC, g.id_garantia DESC
+      LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2};
     `;
-    const res = await this.pool.query(query, [id_sucursal]);
-    return res.rows;
+
+    const countRes = await this.pool.query(countQuery, values);
+    const total = parseInt(countRes.rows[0].count, 10);
+
+    const res = await this.pool.query(dataQuery, [...values, limit, offset]);
+    return { data: res.rows, total };
   }
 
   async obtenerReacondicionadosDisponibles(

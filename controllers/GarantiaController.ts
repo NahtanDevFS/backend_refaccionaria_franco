@@ -107,10 +107,28 @@ export class GarantiaController {
 
   obtenerHistorial = async (req: Request, res: Response): Promise<void> => {
     try {
-      const data = await this.garantiaService.obtenerHistorial(
+      const { search, estado, fechaInicio, fechaFin, page, limit } = req.query;
+
+      const pageNumber = page ? parseInt(page as string, 10) : 1;
+      const limitNumber = limit ? parseInt(limit as string, 10) : 10;
+
+      const result = await this.garantiaService.obtenerHistorial(
         Number(req.params.id_sucursal),
+        search as string,
+        estado as string,
+        fechaInicio as string,
+        fechaFin as string,
+        pageNumber,
+        limitNumber,
       );
-      res.status(200).json({ success: true, data });
+
+      res.status(200).json({
+        success: true,
+        data: result.data,
+        total: result.total,
+        page: pageNumber,
+        totalPages: Math.ceil(result.total / limitNumber),
+      });
     } catch (error: any) {
       res.status(400).json({ success: false, message: error.message });
     }
