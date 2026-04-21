@@ -8,7 +8,7 @@ export class CajaService {
   async obtenerPendientes(id_sucursal: number) {
     const result = await this.pool.query(
       `SELECT
-         v.id_venta, v.estado, v.total, v.pago_contra_entrega, v.created_at,
+         v.id_venta, v.estado, v.canal, v.total, v.pago_contra_entrega, v.created_at,
          COALESCE(c.nombre_razon_social, 'Consumidor Final') AS cliente
        FROM venta v
        LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
@@ -36,7 +36,7 @@ export class CajaService {
       if (venta.estado === "pagada")
         throw new Error("Esta orden ya fue pagada.");
 
-      // ── NUEVO: bloqueo contra entrega no confirmada ──────────────────────
+      // Bloqueo contra entrega no confirmada
       if (venta.pago_contra_entrega) {
         const pedidoRes = await client.query(
           `SELECT estado FROM pedido_domicilio WHERE id_venta = $1`,
@@ -49,7 +49,6 @@ export class CajaService {
           );
         }
       }
-      // ────────────────────────────────────────────────────────────────────
 
       if (data.monto < Number(venta.total)) {
         throw new Error(
@@ -99,8 +98,6 @@ export class CajaService {
     }));
   }
 
-  // ── PUNTO 7: La consulta de cobros pendientes de repartidores
-  //    ahora obtiene la dirección desde la tabla destinatario.
   async obtenerCobrosRepartidoresPendientes(id_sucursal: number) {
     const result = await this.pool.query(
       `SELECT
@@ -116,7 +113,6 @@ export class CajaService {
        JOIN venta            v  ON p.id_venta      = v.id_venta
        JOIN empleado         er ON p.id_repartidor = er.id_empleado
        LEFT JOIN cliente      c ON v.id_cliente    = c.id_cliente
-       -- JOIN con pedido_domicilio y destinatario para obtener la dirección
        LEFT JOIN pedido_domicilio pd ON pd.id_venta       = v.id_venta
        LEFT JOIN destinatario     d  ON pd.id_destinatario = d.id_destinatario
        WHERE p.id_cajero IS NULL
@@ -189,8 +185,6 @@ export class CajaService {
     }
   }
 
-  // ── PUNTO 7: El historial de cobros obtiene la dirección del cliente
-  //    desde destinatario (via pedido_domicilio) en lugar del campo plano.
   async obtenerHistorial(id_sucursal: number, desde?: string, hasta?: string) {
     const fechaDesde = desde ?? new Date().toISOString().split("T")[0];
     const fechaHasta = hasta ?? new Date().toISOString().split("T")[0];

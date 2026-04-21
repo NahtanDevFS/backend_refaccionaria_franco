@@ -7,16 +7,12 @@ import {
 export class EntregaService {
   constructor(private readonly pool: Pool) {}
 
-  // ── PUNTO 7: pedido_domicilio ya no tiene nombre_contacto,
-  //    telefono_contacto ni direccion_entrega. Ahora esos datos
-  //    viven en la tabla destinatario (FK id_destinatario).
   async obtenerMisPedidos(id_repartidor: number) {
     const query = `
       SELECT 
         pd.id_pedido,
         pd.id_venta,
         pd.estado AS estado_pedido,
-        -- Datos del destinatario desde la tabla normalizada
         d.direccion_texto   AS direccion_entrega,
         d.nombre            AS nombre_contacto,
         d.telefono          AS telefono_contacto,
@@ -27,9 +23,18 @@ export class EntregaService {
          JOIN producto p ON dv.id_producto = p.id_producto
          WHERE dv.id_venta = v.id_venta) AS productos
       FROM pedido_domicilio pd
-      JOIN venta       v  ON pd.id_venta         = v.id_venta
-      JOIN destinatario d  ON pd.id_destinatario  = d.id_destinatario
-      WHERE pd.id_repartidor = $1 AND pd.estado = 'pendiente'
+      JOIN venta        v  ON pd.id_venta        = v.id_venta
+      JOIN destinatario d  ON pd.id_destinatario = d.id_destinatario
+      WHERE pd.id_repartidor = $1
+        AND pd.estado = 'pendiente'
+        -- Solo pedidos cuya venta ya está lista para salir a ruta:
+        -- contra entrega: aprobada y esperando cobro del repartidor
+        -- prepagado: cajero ya cobró
+        AND (
+          (v.pago_contra_entrega = true  AND v.estado = 'pendiente_cobro_contra_entrega')
+          OR
+          (v.pago_contra_entrega = false AND v.estado = 'pagada')
+        )
       ORDER BY pd.id_pedido ASC;
     `;
     const result = await this.pool.query(query, [id_repartidor]);
@@ -60,7 +65,7 @@ export class EntregaService {
       if (pedido.estado !== "pendiente")
         throw new Error("El pedido ya fue procesado previamente.");
 
-      let id_pago_generado = null; // Guardará el ID para retornarlo
+      let id_pago_generado = null;
 
       if (pedido.pago_contra_entrega) {
         if (
@@ -77,7 +82,6 @@ export class EntregaService {
           [pedido.id_venta],
         );
 
-        // Agregamos RETURNING id_pago
         const pagoInsert = await client.query(
           `INSERT INTO pago
              (id_venta, id_cajero, id_repartidor, metodo_pago, monto, referencia)
@@ -97,7 +101,6 @@ export class EntregaService {
 
       await client.query("COMMIT");
 
-      // Retornamos el id_pago para que el frontend pueda abrir el ticket
       return { id_pago: id_pago_generado };
     } catch (error) {
       await client.query("ROLLBACK");
@@ -112,7 +115,6 @@ export class EntregaService {
     try {
       await client.query("BEGIN");
 
-      // 1. Verificar y bloquear el pedido
       const pedidoRes = await client.query(
         `SELECT pd.id_pedido, pd.id_venta, v.id_sucursal
        FROM pedido_domicilio pd
@@ -131,8 +133,6 @@ export class EntregaService {
 
       const { id_venta, id_sucursal } = pedidoRes.rows[0];
 
-      // 2. Marcar pedido como fallido (con fecha_entrega = NOW() para que
-      //    aparezca en el historial del repartidor — Bug #1)
       await client.query(
         `UPDATE pedido_domicilio
        SET estado = 'fallido',
@@ -143,7 +143,6 @@ export class EntregaService {
         [data.motivo_fallido, data.id_pedido],
       );
 
-      // 3. Anular la venta — Bug #2
       await client.query(
         `UPDATE venta
        SET estado = 'anulada', updated_at = NOW()
@@ -151,7 +150,6 @@ export class EntregaService {
         [id_venta],
       );
 
-      // 4. Revertir stock — Bug #3
       await client.query(
         `UPDATE inventario_sucursal i
        SET cantidad_actual = i.cantidad_actual + dv.cantidad
@@ -246,8 +244,6 @@ export class EntregaService {
     };
   }
 
-  // ── PUNTO 7: obtenerMiHistorial ahora lee direccion_entrega,
-  //    nombre_contacto y telefono_contacto desde destinatario.
   async obtenerMiHistorial(
     id_repartidor: number,
     desde: string,
@@ -266,11 +262,16 @@ export class EntregaService {
         pd.monto_cobrado_contra_entrega,
         v.total,
         v.pago_contra_entrega,
-        pg.id_pago
+        -- Subquery en lugar de LEFT JOIN para evitar filas duplicadas
+        -- cuando hay más de un pago asociado a la misma venta
+        (SELECT pg.id_pago
+         FROM pago pg
+         WHERE pg.id_venta = v.id_venta
+           AND pg.id_repartidor = $1
+         LIMIT 1)                              AS id_pago
       FROM pedido_domicilio pd
-      JOIN  venta        v   ON pd.id_venta         = v.id_venta
-      JOIN  destinatario d   ON pd.id_destinatario  = d.id_destinatario
-      LEFT JOIN pago pg ON pg.id_venta = v.id_venta
+      JOIN venta        v  ON pd.id_venta        = v.id_venta
+      JOIN destinatario d  ON pd.id_destinatario = d.id_destinatario
       WHERE pd.id_repartidor = $1
         AND pd.estado IN ('entregado', 'fallido')
         AND DATE(pd.fecha_entrega) BETWEEN $2 AND $3
