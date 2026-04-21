@@ -23,7 +23,10 @@ const app = express();
 
 app.use(
   cors({
-    origin: "http://localhost:3001", // Permite solo a tu frontend de Next.js
+    origin: [
+      "http://localhost:3001",
+      "https://frontend-refaccionaria-franco.vercel.app",
+    ],
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
     allowedHeaders: ["Content-Type", "Authorization"], // Vital si usas verificarToken
   }),

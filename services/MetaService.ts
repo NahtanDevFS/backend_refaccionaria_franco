@@ -425,8 +425,11 @@ export class MetaService {
 
       // Determinar estado
       let estado: string;
-      if (anio === anioActual && mes === mesActual) {
-        estado = "en_curso"; // el mes todavía no cerró
+      const esFuturoOActual =
+        anio > anioActual || (anio === anioActual && mes >= mesActual);
+
+      if (esFuturoOActual) {
+        estado = "en_curso";
       } else if (pct >= 100) {
         estado = "cumplió";
       } else {
