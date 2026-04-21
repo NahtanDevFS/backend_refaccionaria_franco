@@ -358,17 +358,45 @@ export class VentaService {
     }
   }
 
-  async obtenerRepartidores(id_sucursal: number): Promise<any[]> {
+  async obtenerRepartidores(id_sucursal: number): Promise<
+    {
+      id_empleado: number;
+      nombre: string;
+      apellido: string;
+      disponible: boolean;
+      pedidos_activos: number;
+    }[]
+  > {
     const query = `
-      SELECT e.id_empleado, e.nombre, e.apellido
+      SELECT
+        e.id_empleado,
+        e.nombre,
+        e.apellido,
+        e.disponible,
+        COALESCE(
+          (
+            SELECT COUNT(*)::int
+            FROM pedido_domicilio pd
+            WHERE pd.id_repartidor = e.id_empleado
+              AND pd.estado = 'pendiente'
+          ),
+          0
+        ) AS pedidos_activos
       FROM empleado e
       INNER JOIN puesto p ON e.id_puesto = p.id_puesto
-      WHERE e.id_sucursal = $1 
-        AND p.nombre ILIKE '%repartidor%' 
-        AND e.activo = true;
+      WHERE e.id_sucursal = $1
+        AND p.nombre ILIKE '%repartidor%'
+        AND e.activo = true
+      ORDER BY e.disponible DESC, pedidos_activos ASC, e.nombre ASC;
     `;
     const result = await this.pool.query(query, [id_sucursal]);
-    return result.rows;
+    return result.rows.map((r) => ({
+      id_empleado: r.id_empleado,
+      nombre: r.nombre,
+      apellido: r.apellido,
+      disponible: r.disponible,
+      pedidos_activos: Number(r.pedidos_activos),
+    }));
   }
 
   async obtenerPendientesAutorizacion(id_sucursal: number): Promise<any[]> {
