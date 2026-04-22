@@ -11,7 +11,9 @@ export interface ResolverGarantiaDTO {
   id_supervisor: number;
   aprobado: boolean;
   resolucion: string;
-  // Solo requeridos cuando aprobado = true
+  // Al aprobar: condicion_recibido es obligatorio (validado en el schema Zod).
+  // Al rechazar: condicion_recibido es opcional — solo se envía si el cliente
+  //              entregó físicamente la pieza a pesar del rechazo.
   condicion_recibido?: string;
   notas_inspeccion?: string;
 }
