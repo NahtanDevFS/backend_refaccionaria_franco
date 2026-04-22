@@ -13,6 +13,7 @@ export class AdminService {
       ? `AND e.id_sucursal = ${Number(id_sucursal)}`
       : "";
 
+    // LEFT JOIN a sucursal y region porque el GERENTE_REGIONAL no tiene sucursal
     const query = `
       SELECT
         e.id_empleado,
@@ -24,8 +25,10 @@ export class AdminService {
         e.email,
         e.fecha_ingreso,
         e.activo,
-        s.id_sucursal,
+        e.id_sucursal,
         s.nombre                              AS sucursal,
+        e.id_region,
+        rg.nombre                             AS region,
         p.id_puesto,
         p.nombre                              AS puesto,
         u.id_usuario,
@@ -36,7 +39,8 @@ export class AdminService {
         hs.tipo_contrato,
         hs.fecha_vigencia                     AS salario_desde
       FROM empleado e
-      INNER JOIN sucursal    s  ON e.id_sucursal = s.id_sucursal
+      LEFT  JOIN sucursal    s  ON e.id_sucursal = s.id_sucursal
+      LEFT  JOIN region      rg ON e.id_region   = rg.id_region
       INNER JOIN puesto      p  ON e.id_puesto   = p.id_puesto
       LEFT  JOIN usuario     u  ON u.id_empleado = e.id_empleado
       LEFT  JOIN usuario_rol ur ON ur.id_usuario = u.id_usuario
@@ -49,7 +53,7 @@ export class AdminService {
           LIMIT  1
       ) hs ON true
       WHERE e.activo = true ${filtroSucursal}
-      ORDER BY s.nombre, e.apellido, e.nombre;
+      ORDER BY COALESCE(s.nombre, rg.nombre), e.apellido, e.nombre;
     `;
 
     const result = await this.pool.query(query);
@@ -64,10 +68,12 @@ export class AdminService {
       email: r.email,
       fecha_ingreso: r.fecha_ingreso,
       activo: r.activo,
-      sucursal: {
-        id_sucursal: r.id_sucursal,
-        nombre: r.sucursal,
-      },
+      // Para empleados de sucursal: sucursal presente, region null
+      // Para gerente regional: sucursal null, region presente
+      sucursal: r.id_sucursal
+        ? { id_sucursal: r.id_sucursal, nombre: r.sucursal }
+        : null,
+      region: r.id_region ? { id_region: r.id_region, nombre: r.region } : null,
       puesto: {
         id_puesto: r.id_puesto,
         nombre: r.puesto,
@@ -95,7 +101,9 @@ export class AdminService {
     // Datos del empleado
     nombre: string;
     apellido: string;
-    id_sucursal: number;
+    // Exactamente uno de los dos debe estar presente (ver constraint en BD)
+    id_sucursal?: number | null;
+    id_region?: number | null;
     id_puesto: number;
     dpi?: string;
     nit?: string;
@@ -112,6 +120,15 @@ export class AdminService {
     // Para auditoría
     id_usuario_creador: number;
   }) {
+    // Validar que venga exactamente uno de los dos
+    const tieneSucursal = !!data.id_sucursal;
+    const tieneRegion = !!data.id_region;
+    if (tieneSucursal === tieneRegion) {
+      throw new Error(
+        "Debe especificarse id_sucursal O id_region, nunca ambos ni ninguno.",
+      );
+    }
+
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -136,15 +153,16 @@ export class AdminService {
         }
       }
 
-      // 3. Insertar empleado
+      // 3. Insertar empleado (id_sucursal o id_region, el que corresponda)
       const empRes = await client.query(
         `INSERT INTO empleado
-           (id_sucursal, id_puesto, nombre, apellido, dpi, nit,
+           (id_sucursal, id_region, id_puesto, nombre, apellido, dpi, nit,
             telefono, email, fecha_ingreso, activo)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true)
          RETURNING id_empleado`,
         [
-          data.id_sucursal,
+          data.id_sucursal || null,
+          data.id_region || null,
           data.id_puesto,
           data.nombre.trim(),
           data.apellido.trim(),
@@ -208,7 +226,6 @@ export class AdminService {
     motivo_cambio: string;
     id_usuario_creador: number;
   }) {
-    // Verificar que el empleado exista
     const empRes = await this.pool.query(
       "SELECT id_empleado FROM empleado WHERE id_empleado = $1 AND activo = true",
       [data.id_empleado],
@@ -273,6 +290,13 @@ export class AdminService {
   async listarSucursales() {
     const r = await this.pool.query(
       "SELECT id_sucursal, nombre FROM sucursal WHERE activo=true ORDER BY nombre",
+    );
+    return r.rows;
+  }
+
+  async listarRegiones() {
+    const r = await this.pool.query(
+      "SELECT id_region, nombre FROM region WHERE activo=true ORDER BY nombre",
     );
     return r.rows;
   }

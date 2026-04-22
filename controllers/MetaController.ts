@@ -27,7 +27,6 @@ export class MetaController {
         });
         return;
       }
-
       res.status(400).json({
         exito: false,
         mensaje:
@@ -38,7 +37,7 @@ export class MetaController {
     }
   };
 
-  // ─── Cálculo de comisiones (sin cambios) ────────────────────────────────
+  // ─── Cálculo de comisiones individual ───────────────────────────────────
   consultarRendimiento = async (req: Request, res: Response): Promise<void> => {
     try {
       const id_empleado = parseInt(req.params.id_empleado as string, 10);
@@ -74,7 +73,7 @@ export class MetaController {
     }
   };
 
-  // ─── Rendimiento mensual filtrado por sucursal ──────────────────────────
+  // ─── Rendimiento mensual filtrado por sucursal/región ───────────────────
   obtenerRendimientoMensual = async (
     req: Request,
     res: Response,
@@ -87,22 +86,22 @@ export class MetaController {
 
       const rendimientos = await this.metaService.obtenerRendimientoMensual(
         usuario.rol,
-        usuario.id_sucursal,
+        usuario.id_sucursal, // null para GERENTE_REGIONAL
+        usuario.id_region, // null para todos los demás roles
         idSucursalQuery,
       );
 
       res.status(200).json(rendimientos);
     } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : "Error interno del servidor";
       res.status(500).json({
         success: false,
-        message: errorMessage,
+        message:
+          error instanceof Error ? error.message : "Error interno del servidor",
       });
     }
   };
 
-  // ─── Consolidado de la sucursal (mes actual) ────────────────────────────
+  // ─── Consolidado (mes actual) ────────────────────────────────────────────
   obtenerConsolidado = async (req: Request, res: Response): Promise<void> => {
     try {
       const usuario = req.usuario!;
@@ -113,6 +112,7 @@ export class MetaController {
       const consolidado = await this.metaService.obtenerConsolidadoSucursal(
         usuario.rol,
         usuario.id_sucursal,
+        usuario.id_region,
         idSucursalQuery,
       );
 
@@ -142,16 +142,16 @@ export class MetaController {
         : undefined;
 
       if (isNaN(anio) || isNaN(mes)) {
-        res.status(400).json({
-          exito: false,
-          mensaje: "Año y mes son obligatorios",
-        });
+        res
+          .status(400)
+          .json({ exito: false, mensaje: "Año y mes son obligatorios" });
         return;
       }
 
       const vendedores = await this.metaService.obtenerVendedoresParaAsignar(
         usuario.rol,
         usuario.id_sucursal,
+        usuario.id_region,
         anio,
         mes,
         idSucursalQuery,
@@ -161,15 +161,12 @@ export class MetaController {
     } catch (error) {
       res.status(500).json({
         exito: false,
-        mensaje:
-          error instanceof Error
-            ? error.message
-            : "Error al obtener vendedores",
+        mensaje: error instanceof Error ? error.message : "Error interno",
       });
     }
   };
 
-  // ─── Sugerencia automática de meta ──────────────────────────────────────
+  // ─── Sugerencia automática de meta ─────────────────────────────────────
   obtenerSugerencia = async (req: Request, res: Response): Promise<void> => {
     try {
       const id_empleado = parseInt(req.params.id_empleado as string, 10);
@@ -186,24 +183,24 @@ export class MetaController {
     } catch (error) {
       res.status(500).json({
         exito: false,
-        mensaje:
-          error instanceof Error
-            ? error.message
-            : "Error al obtener sugerencia",
+        mensaje: error instanceof Error ? error.message : "Error interno",
       });
     }
   };
 
-  // ─── Listar sucursales (para selector) ──────────────────────────────────
+  // ─── Sucursales (para selector — respeta región del gerente) ────────────
   obtenerSucursales = async (req: Request, res: Response): Promise<void> => {
     try {
-      const sucursales = await this.metaService.listarSucursales();
+      const usuario = req.usuario!;
+      const sucursales = await this.metaService.obtenerSucursales(
+        usuario.rol,
+        usuario.id_region,
+      );
       res.status(200).json(sucursales);
     } catch (error) {
       res.status(500).json({
         exito: false,
-        mensaje:
-          error instanceof Error ? error.message : "Error al listar sucursales",
+        mensaje: error instanceof Error ? error.message : "Error interno",
       });
     }
   };
@@ -220,13 +217,12 @@ export class MetaController {
       }
 
       const historial =
-        await this.metaService.obtenerHistorialEmpleado(id_empleado);
+        await this.metaService.obtenerHistorialMetas(id_empleado);
       res.status(200).json(historial);
     } catch (error) {
       res.status(500).json({
         exito: false,
-        mensaje:
-          error instanceof Error ? error.message : "Error al obtener historial",
+        mensaje: error instanceof Error ? error.message : "Error interno",
       });
     }
   };

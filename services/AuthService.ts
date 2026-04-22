@@ -53,7 +53,8 @@ export class AuthService {
     const secreto = process.env.JWT_SECRET;
     if (!secreto) throw new Error("CONFIG ERROR: JWT_SECRET no está definido.");
 
-    // ── CAMBIO: se agrega u.username y s.nombre (sucursal) al SELECT ──────────
+    // LEFT JOIN a sucursal y a region porque el GERENTE_REGIONAL
+    // tiene id_sucursal = NULL y usa id_region en su lugar.
     const query = `
       SELECT 
         u.id_usuario,
@@ -61,11 +62,14 @@ export class AuthService {
         u.password_hash,
         e.id_empleado,
         e.id_sucursal,
+        e.id_region,
         s.nombre  AS nombre_sucursal,
+        rg.nombre AS nombre_region,
         r.nombre  AS rol
       FROM usuario u
-      INNER JOIN empleado     e  ON u.id_empleado = e.id_empleado
-      INNER JOIN sucursal     s  ON e.id_sucursal  = s.id_sucursal
+      INNER JOIN empleado     e  ON u.id_empleado  = e.id_empleado
+      LEFT  JOIN sucursal     s  ON e.id_sucursal  = s.id_sucursal
+      LEFT  JOIN region       rg ON e.id_region    = rg.id_region
       INNER JOIN usuario_rol  ur ON u.id_usuario   = ur.id_usuario
       INNER JOIN rol          r  ON ur.id_rol       = r.id_rol
       WHERE u.username = $1 AND u.activo = true;
@@ -84,13 +88,18 @@ export class AuthService {
     const payload: PayloadToken = {
       id_usuario: usuario.id_usuario,
       id_empleado: usuario.id_empleado,
-      id_sucursal: usuario.id_sucursal,
+      id_sucursal: usuario.id_sucursal ?? null, // null para GERENTE_REGIONAL
+      id_region: usuario.id_region ?? null, // null para todos los demás
       rol: usuario.rol,
     };
 
     const token = jwt.sign(payload, secreto, { expiresIn: "30m" });
 
-    // ── CAMBIO: el objeto `usuario` ahora incluye username y nombre_sucursal ──
+    // El nombre de contexto que se muestra en el sidebar:
+    // sucursal para roles locales, región para el gerente regional.
+    const nombre_contexto =
+      usuario.nombre_sucursal ?? `Región ${usuario.nombre_region}`;
+
     return {
       exito: true,
       mensaje: "Autenticación exitosa",
@@ -98,7 +107,7 @@ export class AuthService {
       usuario: {
         ...payload,
         username: usuario.username,
-        nombre_sucursal: usuario.nombre_sucursal,
+        nombre_sucursal: nombre_contexto,
       },
     };
   }
