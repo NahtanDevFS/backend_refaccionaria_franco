@@ -5,6 +5,9 @@ import { EmitirDespachoDTO, AjusteInventarioDTO } from "../dtos/BodegaDTO";
 export class BodegaService {
   constructor(private readonly pool: Pool) {}
 
+  // ── Inventario local con costo promedio ponderado ─────────────────────────
+  // Cambio: el LATERAL de costo promedio ahora consulta lote_detalle
+  // en lugar de lote_inventario.
   async obtenerInventarioLocal(id_sucursal: number, filtros?: any) {
     let query = `
       SELECT 
@@ -56,18 +59,19 @@ export class BodegaService {
         LIMIT 1
       ) pp_costo ON true
       -- Costo promedio ponderado y conteo de lotes activos
+      -- Ahora lee lote_detalle, que es la distribución física real por sucursal
       LEFT JOIN LATERAL (
         SELECT
           ROUND(
-            SUM(l.cantidad_actual * l.costo_unitario) / NULLIF(SUM(l.cantidad_actual), 0),
+            SUM(ld.cantidad_actual * ld.costo_unitario) / NULLIF(SUM(ld.cantidad_actual), 0),
             2
           ) AS costo_promedio_ponderado,
           COUNT(*) AS total_lotes
-        FROM lote_inventario l
-        WHERE l.id_producto = p.id_producto
-          AND l.id_sucursal = i.id_sucursal
-          AND l.agotado     = FALSE
-          AND l.activo      = TRUE
+        FROM lote_detalle ld
+        WHERE ld.id_producto = p.id_producto
+          AND ld.id_sucursal = i.id_sucursal
+          AND ld.agotado     = FALSE
+          AND ld.activo      = TRUE
       ) lotes_costo ON true
       WHERE i.id_sucursal = $1
     `;
@@ -118,23 +122,33 @@ export class BodegaService {
   }
 
   // ── Lotes activos de un producto en una sucursal ───────────────────────────
-  // Endpoint lazy: solo se llama cuando el usuario expande el panel de lotes.
-  // No se incluye en el listado general para no penalizar la carga inicial.
+  // Agrupa por id_lote (la compra): si el mismo lote tiene varias filas en
+  // lote_detalle para esta sucursal (p.ej. traslados parciales acumulados),
+  // se suman sus cantidades y se devuelve una sola fila por lote.
+  // El frontend muestra así "Lote #X — N uds" sin duplicar filas del mismo lote.
   async obtenerLotesDeProducto(id_producto: number, id_sucursal: number) {
     const query = `
       SELECT
-        id_lote,
-        cantidad_actual,
-        costo_unitario,
-        fecha_ingreso,
-        -- Identifica el lote de apertura (stock histórico sin trazabilidad real)
-        (DATE(fecha_ingreso) = '2026-04-20') AS es_apertura
-      FROM lote_inventario
-      WHERE id_producto = $1
-        AND id_sucursal = $2
-        AND agotado     = FALSE
-        AND activo      = TRUE
-      ORDER BY fecha_ingreso ASC;
+        li.id_lote,
+        li.es_apertura,
+        li.id_orden_compra,
+        li.fecha_ingreso                          AS fecha_ingreso,
+        SUM(ld.cantidad_actual)                   AS cantidad_actual,
+        -- Costo promedio ponderado dentro del mismo lote en esta sucursal
+        ROUND(
+          SUM(ld.cantidad_actual * ld.costo_unitario)
+          / NULLIF(SUM(ld.cantidad_actual), 0),
+          2
+        )                                         AS costo_unitario
+      FROM lote_detalle ld
+      JOIN lote_inventario li ON ld.id_lote = li.id_lote
+      WHERE ld.id_producto = $1
+        AND ld.id_sucursal = $2
+        AND ld.agotado     = FALSE
+        AND ld.activo      = TRUE
+      GROUP BY li.id_lote, li.es_apertura, li.id_orden_compra, li.fecha_ingreso
+      -- FIFO: el lote más antiguo (por fecha de la compra original) sale primero
+      ORDER BY li.fecha_ingreso ASC;
     `;
 
     const result = await this.pool.query(query, [id_producto, id_sucursal]);
@@ -145,9 +159,13 @@ export class BodegaService {
       costo_unitario: Number(row.costo_unitario),
       fecha_ingreso: row.fecha_ingreso as Date,
       es_apertura: row.es_apertura as boolean,
+      id_orden_compra: row.id_orden_compra ? Number(row.id_orden_compra) : null,
     }));
   }
 
+  // ── Emitir despacho de traslado ────────────────────────────────────────────
+  // Sin cambios: fn_consumir_lotes_fifo ya fue actualizado en la migración
+  // para operar sobre lote_detalle. Este método no necesita modificarse.
   async emitirDespacho(
     id_sucursal_origen: number,
     id_usuario: number,
@@ -217,6 +235,7 @@ export class BodegaService {
           ],
         );
 
+        // fn_consumir_lotes_fifo ya opera sobre lote_detalle tras la migración
         await client.query(`SELECT fn_consumir_lotes_fifo($1, $2, $3, $4)`, [
           det.id_producto,
           id_sucursal_origen,
@@ -251,6 +270,11 @@ export class BodegaService {
     return res.rows;
   }
 
+  // ── Confirmar recepción de traslado ────────────────────────────────────────
+  // Cambio principal: al recibir mercadería ya no se crea un lote_inventario
+  // nuevo. En cambio se busca el lote_detalle origen que fue consumido por
+  // el despacho y se crea un nuevo lote_detalle en la sucursal destino,
+  // heredando el id_lote (y por ende el id_orden_compra) del origen.
   async confirmarRecepcion(
     id_despacho: number,
     id_sucursal_destino: number,
@@ -288,6 +312,7 @@ export class BodegaService {
       for (const det of detallesRes.rows) {
         const cantidadRecibida = Number(det.cantidad);
 
+        // ── Actualizar inventario_sucursal destino ─────────────────────────
         const invRes = await client.query(
           `INSERT INTO inventario_sucursal (id_producto, id_sucursal, cantidad_actual)
            VALUES ($1, $2, $3)
@@ -300,6 +325,7 @@ export class BodegaService {
         const id_inventario = invRes.rows[0].id_inventario;
         const nueva_cantidad = Number(invRes.rows[0].cantidad_actual);
 
+        // ── Movimiento de entrada ──────────────────────────────────────────
         await client.query(
           `INSERT INTO movimiento_inventario
              (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante,
@@ -315,31 +341,140 @@ export class BodegaService {
           ],
         );
 
-        const costoRes = await client.query(
-          `SELECT COALESCE(
-             (SELECT costo_unitario FROM lote_inventario
-              WHERE id_producto = $1 AND id_sucursal = $2
-              ORDER BY fecha_ingreso ASC LIMIT 1),
-             (SELECT precio_costo FROM producto_proveedor
-              WHERE id_producto = $1 AND es_principal = TRUE AND activo = TRUE LIMIT 1),
-             0.00
-           ) AS costo_unitario`,
-          [det.id_producto, id_sucursal_origen],
+        // ── Recuperar el id_lote del lote_detalle origen que fue consumido ─
+        // Buscamos en detalle_consumo_lote los lotes del despacho origen.
+        // Puede haber sido consumido de varios lote_detalle distintos (FIFO),
+        // por eso agrupamos por id_lote y sumamos las cantidades.
+        const lotesOrigenRes = await client.query(
+          `SELECT
+             ld.id_lote,
+             ld.costo_unitario,
+             SUM(dcl.cantidad) AS cantidad_consumida
+           FROM detalle_consumo_lote dcl
+           JOIN lote_detalle ld ON dcl.id_lote_detalle = ld.id_lote_detalle
+           JOIN movimiento_inventario mi ON dcl.id_movimiento = mi.id_movimiento
+           WHERE mi.id_referencia   = $1
+             AND mi.tabla_referencia = 'nota_despacho'
+             AND mi.tipo             = 'salida_traslado'
+             AND ld.id_producto      = $2
+             AND ld.id_sucursal      = $3
+           GROUP BY ld.id_lote, ld.costo_unitario
+           ORDER BY ld.id_lote ASC`,
+          [id_despacho, det.id_producto, id_sucursal_origen],
         );
 
-        await client.query(
-          `INSERT INTO lote_inventario
-             (id_producto, id_sucursal, id_despacho,
-              costo_unitario, cantidad_inicial, cantidad_actual, fecha_ingreso)
-           VALUES ($1, $2, $3, $4, $5, $5, NOW())`,
-          [
-            det.id_producto,
-            id_sucursal_destino,
-            id_despacho,
-            Number(costoRes.rows[0].costo_unitario),
-            cantidadRecibida,
-          ],
-        );
+        if (lotesOrigenRes.rows.length > 0) {
+          // ── Caso normal: hay trazabilidad del lote origen ────────────────
+          // Por cada id_lote que contribuyó al despacho, creamos un
+          // lote_detalle en destino heredando el mismo id_lote.
+          // Así las unidades siguen siendo del mismo lote/compra original.
+          for (const loteOrigen of lotesOrigenRes.rows) {
+            await client.query(
+              `INSERT INTO lote_detalle
+                 (id_lote, id_producto, id_sucursal, id_despacho,
+                  costo_unitario, cantidad_inicial, cantidad_actual, fecha_ingreso)
+               SELECT
+                 $1, $2, $3, $4,
+                 $5, $6, $6,
+                 li.fecha_ingreso   -- heredar fecha del lote original (respeta FIFO)
+               FROM lote_inventario li
+               WHERE li.id_lote = $1`,
+              [
+                Number(loteOrigen.id_lote),
+                det.id_producto,
+                id_sucursal_destino,
+                id_despacho,
+                Number(loteOrigen.costo_unitario),
+                Number(loteOrigen.cantidad_consumida),
+              ],
+            );
+          }
+        } else {
+          // ── Caso borde: lote de apertura histórica sin id_lote_detalle ───
+          // (consumos anteriores a la migración que solo tienen id_lote en
+          // detalle_consumo_lote). Intentamos recuperar el id_lote por
+          // id_lote directo; si tampoco existe, creamos un lote_inventario
+          // de apertura y su lote_detalle correspondiente.
+          const lotesOrigenLegacyRes = await client.query(
+            `SELECT
+               dcl.id_lote,
+               ld_legacy.costo_unitario,
+               SUM(dcl.cantidad) AS cantidad_consumida
+             FROM detalle_consumo_lote dcl
+             JOIN lote_inventario ld_legacy ON dcl.id_lote = ld_legacy.id_lote
+             JOIN movimiento_inventario mi ON dcl.id_movimiento = mi.id_movimiento
+             WHERE mi.id_referencia    = $1
+               AND mi.tabla_referencia  = 'nota_despacho'
+               AND mi.tipo              = 'salida_traslado'
+               AND ld_legacy.id_producto = $2
+               AND ld_legacy.id_sucursal = $3
+             GROUP BY dcl.id_lote, ld_legacy.costo_unitario
+             ORDER BY dcl.id_lote ASC`,
+            [id_despacho, det.id_producto, id_sucursal_origen],
+          );
+
+          if (lotesOrigenLegacyRes.rows.length > 0) {
+            for (const loteOrigen of lotesOrigenLegacyRes.rows) {
+              await client.query(
+                `INSERT INTO lote_detalle
+                   (id_lote, id_producto, id_sucursal, id_despacho,
+                    costo_unitario, cantidad_inicial, cantidad_actual, fecha_ingreso)
+                 SELECT
+                   $1, $2, $3, $4,
+                   $5, $6, $6,
+                   li.fecha_ingreso
+                 FROM lote_inventario li
+                 WHERE li.id_lote = $1`,
+                [
+                  Number(loteOrigen.id_lote),
+                  det.id_producto,
+                  id_sucursal_destino,
+                  id_despacho,
+                  Number(loteOrigen.costo_unitario),
+                  Number(loteOrigen.cantidad_consumida),
+                ],
+              );
+            }
+          } else {
+            // ── Último fallback: sin ninguna trazabilidad ─────────────────
+            // Crear lote_inventario de apertura + lote_detalle.
+            // Solo ocurre en casos extremos (datos muy corruptos o ajustes
+            // manuales sin movimiento registrado).
+            const costoRes = await client.query(
+              `SELECT COALESCE(
+                 (SELECT costo_unitario
+                  FROM lote_detalle
+                  WHERE id_producto = $1 AND id_sucursal = $2
+                  ORDER BY fecha_ingreso ASC LIMIT 1),
+                 (SELECT precio_costo FROM producto_proveedor
+                  WHERE id_producto = $1 AND es_principal = TRUE AND activo = TRUE LIMIT 1),
+                 0.00
+               ) AS costo_unitario`,
+              [det.id_producto, id_sucursal_origen],
+            );
+
+            const nuevoLoteRes = await client.query(
+              `INSERT INTO lote_inventario (es_apertura)
+               VALUES (TRUE)
+               RETURNING id_lote`,
+            );
+
+            await client.query(
+              `INSERT INTO lote_detalle
+                 (id_lote, id_producto, id_sucursal, id_despacho,
+                  costo_unitario, cantidad_inicial, cantidad_actual)
+               VALUES ($1, $2, $3, $4, $5, $6, $6)`,
+              [
+                nuevoLoteRes.rows[0].id_lote,
+                det.id_producto,
+                id_sucursal_destino,
+                id_despacho,
+                Number(costoRes.rows[0].costo_unitario),
+                cantidadRecibida,
+              ],
+            );
+          }
+        }
       }
 
       await client.query("COMMIT");
@@ -351,6 +486,11 @@ export class BodegaService {
     }
   }
 
+  // ── Ajuste de inventario ───────────────────────────────────────────────────
+  // Cambio: ajuste_positivo ahora inserta en lote_detalle en lugar de
+  // lote_inventario. Se crea un lote_inventario sin orden de compra
+  // (es_apertura=FALSE, porque es un ajuste manual intencional, no stock
+  // histórico) y su lote_detalle asociado.
   async ajustarInventario(
     id_sucursal: number,
     id_usuario: number,
@@ -403,6 +543,7 @@ export class BodegaService {
       const id_movimiento = movRes.rows[0].id_movimiento;
 
       if (data.tipo === "ajuste_negativo") {
+        // fn_consumir_lotes_fifo ya opera sobre lote_detalle tras la migración
         await client.query(`SELECT fn_consumir_lotes_fifo($1, $2, $3, $4)`, [
           data.id_producto,
           id_sucursal,
@@ -410,6 +551,8 @@ export class BodegaService {
           id_movimiento,
         ]);
       } else {
+        // ajuste_positivo: crear lote_inventario (sin OC, no es apertura) +
+        // su lote_detalle correspondiente en esta sucursal.
         const costoRes = await client.query(
           `SELECT COALESCE(
              (SELECT precio_costo FROM producto_proveedor
@@ -419,12 +562,21 @@ export class BodegaService {
           [data.id_producto],
         );
 
+        // El lote representa el "evento de ajuste", no una compra real.
+        // es_apertura=FALSE: distingue ajustes intencionales del stock histórico.
+        const nuevoLoteRes = await client.query(
+          `INSERT INTO lote_inventario (es_apertura)
+           VALUES (FALSE)
+           RETURNING id_lote`,
+        );
+
         await client.query(
-          `INSERT INTO lote_inventario
-             (id_producto, id_sucursal,
+          `INSERT INTO lote_detalle
+             (id_lote, id_producto, id_sucursal,
               costo_unitario, cantidad_inicial, cantidad_actual, fecha_ingreso)
-           VALUES ($1, $2, $3, $4, $4, NOW())`,
+           VALUES ($1, $2, $3, $4, $5, $5, NOW())`,
           [
+            nuevoLoteRes.rows[0].id_lote,
             data.id_producto,
             id_sucursal,
             Number(costoRes.rows[0].costo_unitario),
