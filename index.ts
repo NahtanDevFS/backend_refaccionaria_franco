@@ -1,9 +1,11 @@
 // index.ts
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
 import { Pool } from "pg";
 import cors from "cors";
 import "dotenv/config";
 import { verificarToken } from "./middlewares/auth.middleware";
+import { asignarPoolPorRol } from "./middlewares/db.middleware";
+import { poolAdmin } from "./db";
 
 import { crearVentaRouter } from "./routes/venta.routes";
 import { crearCajaRouter } from "./routes/caja.routes";
@@ -29,48 +31,41 @@ app.use(
       "https://frontend-refaccionaria-franco.vercel.app",
     ],
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
-    allowedHeaders: ["Content-Type", "Authorization"], // Vital si usas verificarToken
+    allowedHeaders: ["Content-Type", "Authorization"],
   }),
 );
 
 app.use(express.json());
 
-// Instanciamos el Pool leyendo las variables de entorno de forma segura
-const dbPool = new Pool({
-  host: process.env.DB_HOST,
-  port: Number(process.env.DB_PORT),
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-});
+app.use("/api/auth", crearAuthRouter(poolAdmin));
 
-//ruta pública
-app.use("/api/auth", crearAuthRouter(dbPool));
-
-//se aplica el middleware a las rutas de abajo
 app.use(verificarToken);
+app.use(asignarPoolPorRol);
 
-// Montamos los routers inyectando la conexión a la base de datos
-app.use("/api/ventas", crearVentaRouter(dbPool));
-app.use("/api/caja", crearCajaRouter(dbPool));
-app.use("/api/inventario", crearInventarioRouter(dbPool));
-app.use("/api/clientes", crearClienteRouter(dbPool));
-app.use("/api/pedidos", crearPedidoRouter(dbPool));
-app.use("/api/arqueos", crearArqueoRouter(dbPool));
-app.use("/api/garantias", crearGarantiaRouter(dbPool));
-app.use("/api/metas", crearMetaRouter(dbPool));
-app.use("/api/bodega", crearBodegaRouter(dbPool));
-app.use("/api/ubicaciones", crearUbicacionRouter(dbPool));
-app.use("/api/entregas", crearEntregaRouter(dbPool));
-app.use("/api/ventas", crearAnulacionRouter(dbPool));
+const routerDinamico = (crearRouter: (pool: Pool) => express.Router) => {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const pool = req.dbPool!;
+    crearRouter(pool)(req, res, next);
+  };
+};
 
-// ── Rutas de administración — requieren token + rol ADMINISTRADOR ────────────
-app.use("/api/admin", crearAdminRouter(dbPool));
+app.use("/api/ventas", routerDinamico(crearVentaRouter));
+app.use("/api/caja", routerDinamico(crearCajaRouter));
+app.use("/api/inventario", routerDinamico(crearInventarioRouter));
+app.use("/api/clientes", routerDinamico(crearClienteRouter));
+app.use("/api/pedidos", routerDinamico(crearPedidoRouter));
+app.use("/api/arqueos", routerDinamico(crearArqueoRouter));
+app.use("/api/garantias", routerDinamico(crearGarantiaRouter));
+app.use("/api/metas", routerDinamico(crearMetaRouter));
+app.use("/api/bodega", routerDinamico(crearBodegaRouter));
+app.use("/api/ubicaciones", routerDinamico(crearUbicacionRouter));
+app.use("/api/entregas", routerDinamico(crearEntregaRouter));
+app.use("/api/ventas", routerDinamico(crearAnulacionRouter));
+
+app.use("/api/admin", routerDinamico(crearAdminRouter));
 
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log(`Servidor corriendo de forma segura en el puerto ${PORT}`);
 });
-
-//npm run dev
