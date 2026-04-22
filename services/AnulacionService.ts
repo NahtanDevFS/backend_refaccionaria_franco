@@ -18,16 +18,26 @@ export class AnulacionService {
 
       // ── 1. Obtener y bloquear la venta ──────────────────────────────────────
       const ventaRes = await client.query(
-        `SELECT v.id_venta, v.id_sucursal, v.estado, v.canal
-         FROM venta v
-         WHERE v.id_venta = $1
-         FOR UPDATE`,
+        `SELECT v.id_venta, v.id_sucursal, v.estado, v.canal, v.total
+        FROM venta v
+        WHERE v.id_venta = $1
+        FOR UPDATE`,
         [data.id_venta],
       );
 
       if (ventaRes.rows.length === 0) throw new Error("Venta no encontrada.");
 
       const venta = ventaRes.rows[0];
+
+      if (data.monto_devolucion !== undefined && data.monto_devolucion !== 0) {
+        if (data.monto_devolucion < 0)
+          throw new Error("El monto a devolver no puede ser negativo.");
+
+        if (data.monto_devolucion > Number(venta.total))
+          throw new Error(
+            `El monto a devolver (Q${data.monto_devolucion.toFixed(2)}) no puede superar el total de la venta (Q${Number(venta.total).toFixed(2)}).`,
+          );
+      }
 
       if (venta.estado === "anulada")
         throw new Error("Esta venta ya se encuentra anulada.");
