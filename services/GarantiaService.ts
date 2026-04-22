@@ -12,7 +12,7 @@ export class GarantiaService {
 
       const detRes = await client.query(
         `SELECT dv.cantidad as cantidad_comprada, v.created_at as fecha_compra,
-                p.garantia_dias, p.id_producto
+                p.garantia_dias, p.id_producto, v.estado as estado_venta
          FROM detalle_venta dv
          JOIN venta v    ON dv.id_venta    = v.id_venta
          JOIN producto p ON dv.id_producto = p.id_producto
@@ -23,7 +23,15 @@ export class GarantiaService {
       if (detRes.rows.length === 0)
         throw new Error("Detalle de venta no encontrado");
 
-      const { cantidad_comprada, fecha_compra, garantia_dias } = detRes.rows[0];
+      const { cantidad_comprada, fecha_compra, garantia_dias, estado_venta } =
+        detRes.rows[0];
+
+      // Solo se puede reclamar garantía sobre ventas efectivamente pagadas.
+      // Ventas pendientes de pago, anuladas o en cualquier otro estado no aplican.
+      if (estado_venta !== "pagada")
+        throw new Error(
+          "Solo se puede reclamar garantía sobre ventas que hayan sido pagadas.",
+        );
 
       if (data.cantidad > Number(cantidad_comprada))
         throw new Error("La cantidad reclamada supera la cantidad comprada.");
