@@ -102,7 +102,10 @@ export class VentaService {
     return result.rows;
   }
 
-  async crearOrdenVenta(data: CrearVentaDTO): Promise<number> {
+  async crearOrdenVenta(
+    data: CrearVentaDTO,
+    id_usuario: number,
+  ): Promise<number> {
     const client = await this.pool.connect();
 
     try {
@@ -307,7 +310,7 @@ export class VentaService {
            RETURNING id_movimiento`,
           [
             det.id_inventario,
-            data.id_vendedor, // el vendedor actúa como usuario en este contexto
+            id_usuario, //id del usuario autenticado (desde el token JWT)
             det.cantidad,
             cantidadResultante,
             id_venta,

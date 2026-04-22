@@ -18,9 +18,6 @@ export class VentaController {
       const idSucToken = req.usuario!.id_sucursal;
       const esGlobal = ROLES_GLOBALES.includes(rol);
 
-      // Roles globales pueden pasar ?id_sucursal=N para filtrar
-      // o no pasarlo para ver todas.
-      // Cualquier otro rol: se fuerza su propia sucursal del token.
       let id_sucursal: number | undefined;
       if (esGlobal) {
         id_sucursal = req.query.id_sucursal
@@ -80,9 +77,31 @@ export class VentaController {
 
   crearOrden = async (req: Request, res: Response): Promise<void> => {
     try {
-      const id_venta = await this.ventaService.crearOrdenVenta(req.body);
+      // 1. Validar el body con Zod (incluye id_sucursal e id_vendedor)
+      const bodyValidado = crearVentaSchema.parse(req.body);
+
+      // 2. Sobreescribir id_sucursal e id_vendedor con los valores del token JWT.
+      //    Esto garantiza que un usuario no pueda registrar ventas en nombre
+      //    de otro vendedor o en una sucursal a la que no pertenece.
+      const datosSeguro = {
+        ...bodyValidado,
+        id_sucursal: req.usuario!.id_sucursal,
+        id_vendedor: req.usuario!.id_empleado,
+      };
+
+      const id_venta = await this.ventaService.crearOrdenVenta(
+        datosSeguro,
+        req.usuario!.id_usuario,
+      );
       res.status(201).json({ success: true, data: { id_venta } });
     } catch (error) {
+      if (error instanceof ZodError) {
+        res.status(400).json({
+          success: false,
+          message: error.issues.map((i) => i.message).join(", "),
+        });
+        return;
+      }
       const errorMessage =
         error instanceof Error ? error.message : "Error interno";
       res.status(400).json({ success: false, message: errorMessage });
