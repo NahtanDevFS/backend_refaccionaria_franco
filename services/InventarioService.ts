@@ -203,13 +203,20 @@ export class InventarioService {
     // BÚSQUEDA CONTEXTUAL DE REACONDICIONADOS
     const ids = normales.map((n) => n.id_producto);
     const queryReac = `
-      SELECT lr.id_lote as id_producto_reacondicionado, lr.id_producto, lr.cantidad as stock_local, lr.precio_venta_reac as precio_venta,
-             p.sku, p.nombre, 'Pieza de Segunda Mano (Garantía)' as marca_repuesto
-      FROM lote_reacondicionado lr
-      JOIN producto p ON lr.id_producto = p.id_producto
-      WHERE lr.id_sucursal = $1 AND lr.estado = 'disponible' AND lr.cantidad > 0
-        AND lr.id_producto = ANY($2::int[])
-    `;
+        SELECT
+          lr.id_lote         AS id_producto_reacondicionado,
+          lr.id_producto,
+          lr.cantidad        AS stock_local,
+          lr.precio_venta_reac AS precio_venta,
+          p.sku,
+          p.nombre,
+          'Pieza de Segunda Mano (Garantía)' AS marca_repuesto
+        FROM lote_reacondicionado lr
+        JOIN producto p ON lr.id_producto = p.id_producto
+        WHERE lr.id_sucursal = $1
+          AND lr.cantidad > 0
+          AND lr.id_producto = ANY($2::int[])
+      `;
     const resReac = await this.pool.query(queryReac, [id_sucursal, ids]);
 
     const reacondicionados = resReac.rows.map((r) => ({

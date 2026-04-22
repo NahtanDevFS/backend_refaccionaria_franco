@@ -14,9 +14,8 @@ const crearEmpleadoSchema = z.object({
   telefono: z.string().max(20).optional(),
   email: z.string().email().optional().or(z.literal("")),
   fecha_ingreso: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD"),
-  // Salario
+  // Salario — tipo_contrato eliminado
   salario_base: z.number().positive("El salario debe ser mayor a 0"),
-  tipo_contrato: z.enum(["planilla", "honorarios"]),
   // Usuario
   username: z.string().min(4, "Username mínimo 4 caracteres"),
   password: z.string().min(6, "Password mínimo 6 caracteres"),
@@ -25,7 +24,7 @@ const crearEmpleadoSchema = z.object({
 
 const actualizarSalarioSchema = z.object({
   salario_base: z.number().positive(),
-  tipo_contrato: z.enum(["planilla", "honorarios"]),
+  // tipo_contrato eliminado
   fecha_vigencia: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   motivo_cambio: z.string().min(3, "Indique el motivo del cambio"),
 });
@@ -126,14 +125,16 @@ export class AdminController {
   // GET /admin/catalogos
   obtenerCatalogos = async (req: Request, res: Response): Promise<void> => {
     try {
-      const [sucursales, puestos, roles] = await Promise.all([
+      const [sucursales, puestos, roles, tipos_cliente] = await Promise.all([
         this.adminService.listarSucursales(),
         this.adminService.listarPuestos(),
         this.adminService.listarRoles(),
+        this.adminService.listarTiposCliente(),
       ]);
-      res
-        .status(200)
-        .json({ success: true, data: { sucursales, puestos, roles } });
+      res.status(200).json({
+        success: true,
+        data: { sucursales, puestos, roles, tipos_cliente },
+      });
     } catch (error: any) {
       res.status(500).json({ success: false, message: error.message });
     }

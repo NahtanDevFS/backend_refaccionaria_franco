@@ -5,11 +5,33 @@ import { CrearClienteDTO } from "../dtos/ClienteDTO";
 export class ClienteService {
   constructor(private readonly pool: Pool) {}
 
+  // ── Helper: resuelve el id_tipo_cliente desde el nombre en string.
+  //    Si el nombre no existe en el catálogo, devuelve el id de 'particular'.
+  private async resolverIdTipoCliente(
+    client: any,
+    nombreTipo: string,
+  ): Promise<number> {
+    const res = await client.query(
+      `SELECT id_tipo_cliente FROM tipo_cliente
+       WHERE LOWER(nombre) = LOWER($1) AND activo = true
+       LIMIT 1`,
+      [nombreTipo ?? "particular"],
+    );
+    if (res.rows.length > 0) return res.rows[0].id_tipo_cliente;
+
+    // Fallback a 'particular' si el valor no está en el catálogo
+    const fallback = await client.query(
+      `SELECT id_tipo_cliente FROM tipo_cliente WHERE nombre = 'particular' LIMIT 1`,
+    );
+    return fallback.rows[0].id_tipo_cliente;
+  }
+
   async registrarCliente(dto: CrearClienteDTO) {
     if (dto.nit && dto.nit.toUpperCase() !== "CF") {
-      const queryBusqueda = `SELECT nit FROM cliente WHERE nit = $1`;
-      const resultBusqueda = await this.pool.query(queryBusqueda, [dto.nit]);
-
+      const resultBusqueda = await this.pool.query(
+        `SELECT nit FROM cliente WHERE nit = $1`,
+        [dto.nit],
+      );
       if (resultBusqueda.rows.length > 0) {
         throw new Error(
           `El cliente con NIT ${dto.nit} ya se encuentra registrado.`,
@@ -18,13 +40,10 @@ export class ClienteService {
     }
 
     if (dto.telefono && dto.telefono.trim() !== "") {
-      // Solo dígitos, exactamente 8
       const soloDigitos = dto.telefono.replace(/\D/g, "");
       if (soloDigitos.length !== 8) {
         throw new Error("El teléfono debe tener exactamente 8 dígitos.");
       }
-
-      //no puede existir otro cliente con el mismo teléfono
       const telRes = await this.pool.query(
         `SELECT id_cliente FROM cliente WHERE telefono = $1`,
         [soloDigitos],
@@ -34,23 +53,31 @@ export class ClienteService {
           `Ya existe un cliente registrado con el teléfono ${soloDigitos}.`,
         );
       }
-
-      // Guardamos siempre el teléfono como 8 dígitos limpios
       dto.telefono = soloDigitos;
     }
 
+    // Resolver id_tipo_cliente desde el nombre recibido del frontend
+    const id_tipo_cliente = await this.resolverIdTipoCliente(
+      this.pool,
+      dto.tipo_cliente,
+    );
+
     const query = `
       INSERT INTO cliente (
-        nombre_razon_social, nit, tipo_cliente, telefono,
+        nombre_razon_social, nit, id_tipo_cliente, telefono,
         email, direccion, id_municipio, notas_internas, created_at
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-      RETURNING *;
+      RETURNING
+        id_cliente, nombre_razon_social, nit, telefono,
+        email, direccion, id_municipio, notas_internas,
+        activo, created_at, updated_at,
+        (SELECT nombre FROM tipo_cliente WHERE id_tipo_cliente = $3) AS tipo_cliente;
     `;
 
     const values = [
       dto.nombre_razon_social,
       dto.nit || "CF",
-      dto.tipo_cliente,
+      id_tipo_cliente,
       dto.telefono || null,
       dto.email || null,
       dto.direccion || null,
@@ -74,9 +101,17 @@ export class ClienteService {
     }
 
     const query = `
-      SELECT * FROM cliente 
-      WHERE nombre_razon_social ILIKE $1 OR nit ILIKE $1 OR telefono ILIKE $1
-      ORDER BY nombre_razon_social ASC
+      SELECT
+        c.id_cliente, c.nombre_razon_social, c.nit,
+        c.telefono, c.email, c.direccion, c.id_municipio,
+        c.notas_internas, c.activo, c.created_at, c.updated_at,
+        tc.nombre AS tipo_cliente
+      FROM cliente c
+      JOIN tipo_cliente tc ON c.id_tipo_cliente = tc.id_tipo_cliente
+      WHERE c.nombre_razon_social ILIKE $1
+         OR c.nit   ILIKE $1
+         OR c.telefono ILIKE $1
+      ORDER BY c.nombre_razon_social ASC
       LIMIT 20;
     `;
     const result = await this.pool.query(query, [`%${criterio.trim()}%`]);
@@ -84,7 +119,16 @@ export class ClienteService {
   }
 
   async buscarPorNit(nit: string) {
-    const query = `SELECT * FROM cliente WHERE nit = $1`;
+    const query = `
+      SELECT
+        c.id_cliente, c.nombre_razon_social, c.nit,
+        c.telefono, c.email, c.direccion, c.id_municipio,
+        c.notas_internas, c.activo, c.created_at, c.updated_at,
+        tc.nombre AS tipo_cliente
+      FROM cliente c
+      JOIN tipo_cliente tc ON c.id_tipo_cliente = tc.id_tipo_cliente
+      WHERE c.nit = $1
+    `;
     const result = await this.pool.query(query, [nit]);
     return result.rows.length ? result.rows[0] : null;
   }

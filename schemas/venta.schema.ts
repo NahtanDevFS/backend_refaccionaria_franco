@@ -24,16 +24,20 @@ export const crearVentaSchema = z
     cliente_nuevo: z
       .object({
         nombre_razon_social: z.string(),
-        tipo_cliente: z.string(),
-        telefono: z.string().optional(),
+        // tipo_cliente llega como string desde el frontend (ej. 'particular').
+        // El service lo resuelve a id_tipo_cliente internamente.
+        tipo_cliente: z.string().optional().default("particular"),
+        // Estos campos pueden llegar como null desde el frontend
+        telefono: z.string().nullable().optional(),
         email: z
           .string()
           .email("Correo electrónico inválido")
+          .nullable()
           .optional()
           .or(z.literal("")),
-        direccion: z.string().optional(),
-        id_municipio: z.number().optional(),
-        notas_internas: z.string().optional(),
+        direccion: z.string().nullable().optional(),
+        id_municipio: z.number().nullable().optional(),
+        notas_internas: z.string().nullable().optional(),
       })
       .nullable()
       .optional(),

@@ -13,7 +13,6 @@ export class AdminService {
       ? `AND e.id_sucursal = ${Number(id_sucursal)}`
       : "";
 
-    // LEFT JOIN a sucursal y region porque el GERENTE_REGIONAL no tiene sucursal
     const query = `
       SELECT
         e.id_empleado,
@@ -25,10 +24,8 @@ export class AdminService {
         e.email,
         e.fecha_ingreso,
         e.activo,
-        e.id_sucursal,
+        s.id_sucursal,
         s.nombre                              AS sucursal,
-        e.id_region,
-        rg.nombre                             AS region,
         p.id_puesto,
         p.nombre                              AS puesto,
         u.id_usuario,
@@ -36,24 +33,22 @@ export class AdminService {
         u.activo                              AS usuario_activo,
         r.nombre                              AS rol,
         hs.salario_base,
-        hs.tipo_contrato,
         hs.fecha_vigencia                     AS salario_desde
       FROM empleado e
-      LEFT  JOIN sucursal    s  ON e.id_sucursal = s.id_sucursal
-      LEFT  JOIN region      rg ON e.id_region   = rg.id_region
+      INNER JOIN sucursal    s  ON e.id_sucursal = s.id_sucursal
       INNER JOIN puesto      p  ON e.id_puesto   = p.id_puesto
       LEFT  JOIN usuario     u  ON u.id_empleado = e.id_empleado
       LEFT  JOIN usuario_rol ur ON ur.id_usuario = u.id_usuario
       LEFT  JOIN rol         r  ON r.id_rol      = ur.id_rol
       LEFT  JOIN LATERAL (
-          SELECT salario_base, tipo_contrato, fecha_vigencia
+          SELECT salario_base, fecha_vigencia
           FROM   historial_salario
           WHERE  id_empleado = e.id_empleado
           ORDER  BY fecha_vigencia DESC
           LIMIT  1
       ) hs ON true
       WHERE e.activo = true ${filtroSucursal}
-      ORDER BY COALESCE(s.nombre, rg.nombre), e.apellido, e.nombre;
+      ORDER BY s.nombre, e.apellido, e.nombre;
     `;
 
     const result = await this.pool.query(query);
@@ -68,12 +63,10 @@ export class AdminService {
       email: r.email,
       fecha_ingreso: r.fecha_ingreso,
       activo: r.activo,
-      // Para empleados de sucursal: sucursal presente, region null
-      // Para gerente regional: sucursal null, region presente
-      sucursal: r.id_sucursal
-        ? { id_sucursal: r.id_sucursal, nombre: r.sucursal }
-        : null,
-      region: r.id_region ? { id_region: r.id_region, nombre: r.region } : null,
+      sucursal: {
+        id_sucursal: r.id_sucursal,
+        nombre: r.sucursal,
+      },
       puesto: {
         id_puesto: r.id_puesto,
         nombre: r.puesto,
@@ -89,7 +82,6 @@ export class AdminService {
       salario_actual: r.salario_base
         ? {
             monto: Number(r.salario_base),
-            tipo_contrato: r.tipo_contrato,
             desde: r.salario_desde,
           }
         : null,
@@ -98,37 +90,21 @@ export class AdminService {
 
   // ─── Crear empleado + salario + usuario en una sola transacción ──────────
   async crearEmpleadoCompleto(data: {
-    // Datos del empleado
     nombre: string;
     apellido: string;
-    // Exactamente uno de los dos debe estar presente (ver constraint en BD)
-    id_sucursal?: number | null;
-    id_region?: number | null;
+    id_sucursal: number;
     id_puesto: number;
     dpi?: string;
     nit?: string;
     telefono?: string;
     email?: string;
     fecha_ingreso: string;
-    // Salario
     salario_base: number;
-    tipo_contrato: "planilla" | "honorarios";
-    // Usuario
     username: string;
     password: string;
     id_rol: number;
-    // Para auditoría
     id_usuario_creador: number;
   }) {
-    // Validar que venga exactamente uno de los dos
-    const tieneSucursal = !!data.id_sucursal;
-    const tieneRegion = !!data.id_region;
-    if (tieneSucursal === tieneRegion) {
-      throw new Error(
-        "Debe especificarse id_sucursal O id_region, nunca ambos ni ninguno.",
-      );
-    }
-
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -153,16 +129,15 @@ export class AdminService {
         }
       }
 
-      // 3. Insertar empleado (id_sucursal o id_region, el que corresponda)
+      // 3. Insertar empleado
       const empRes = await client.query(
         `INSERT INTO empleado
-           (id_sucursal, id_region, id_puesto, nombre, apellido, dpi, nit,
+           (id_sucursal, id_puesto, nombre, apellido, dpi, nit,
             telefono, email, fecha_ingreso, activo)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true)
          RETURNING id_empleado`,
         [
-          data.id_sucursal || null,
-          data.id_region || null,
+          data.id_sucursal,
           data.id_puesto,
           data.nombre.trim(),
           data.apellido.trim(),
@@ -175,16 +150,14 @@ export class AdminService {
       );
       const id_empleado = empRes.rows[0].id_empleado;
 
-      // 4. Insertar salario inicial en historial
+      // 4. Insertar salario inicial en historial (sin tipo_contrato)
       await client.query(
         `INSERT INTO historial_salario
-           (id_empleado, salario_base, tipo_contrato,
-            fecha_vigencia, motivo_cambio, registrado_por)
-         VALUES ($1,$2,$3,$4,'Contratación inicial',$5)`,
+           (id_empleado, salario_base, fecha_vigencia, motivo_cambio, registrado_por)
+         VALUES ($1,$2,$3,'Contratación inicial',$4)`,
         [
           id_empleado,
           data.salario_base,
-          data.tipo_contrato,
           data.fecha_ingreso,
           data.id_usuario_creador,
         ],
@@ -207,7 +180,6 @@ export class AdminService {
       );
 
       await client.query("COMMIT");
-
       return { id_empleado, id_usuario };
     } catch (error) {
       await client.query("ROLLBACK");
@@ -221,7 +193,6 @@ export class AdminService {
   async actualizarSalario(data: {
     id_empleado: number;
     salario_base: number;
-    tipo_contrato: "planilla" | "honorarios";
     fecha_vigencia: string;
     motivo_cambio: string;
     id_usuario_creador: number;
@@ -236,14 +207,12 @@ export class AdminService {
 
     const result = await this.pool.query(
       `INSERT INTO historial_salario
-         (id_empleado, salario_base, tipo_contrato,
-          fecha_vigencia, motivo_cambio, registrado_por)
-       VALUES ($1,$2,$3,$4,$5,$6)
+         (id_empleado, salario_base, fecha_vigencia, motivo_cambio, registrado_por)
+       VALUES ($1,$2,$3,$4,$5)
        RETURNING id_historial`,
       [
         data.id_empleado,
         data.salario_base,
-        data.tipo_contrato,
         data.fecha_vigencia,
         data.motivo_cambio,
         data.id_usuario_creador,
@@ -258,7 +227,6 @@ export class AdminService {
       `SELECT
          hs.id_historial,
          hs.salario_base,
-         hs.tipo_contrato,
          hs.fecha_vigencia,
          hs.motivo_cambio,
          hs.created_at,
@@ -278,7 +246,6 @@ export class AdminService {
     return result.rows.map((r) => ({
       id_historial: r.id_historial,
       salario_base: Number(r.salario_base),
-      tipo_contrato: r.tipo_contrato,
       fecha_vigencia: r.fecha_vigencia,
       motivo_cambio: r.motivo_cambio,
       registrado_por: r.registrado_por ?? "Sistema",
@@ -294,13 +261,6 @@ export class AdminService {
     return r.rows;
   }
 
-  async listarRegiones() {
-    const r = await this.pool.query(
-      "SELECT id_region, nombre FROM region WHERE activo=true ORDER BY nombre",
-    );
-    return r.rows;
-  }
-
   async listarPuestos() {
     const r = await this.pool.query(
       "SELECT id_puesto, nombre FROM puesto WHERE activo=true ORDER BY nombre",
@@ -311,6 +271,14 @@ export class AdminService {
   async listarRoles() {
     const r = await this.pool.query(
       "SELECT id_rol, nombre FROM rol WHERE activo=true ORDER BY nombre",
+    );
+    return r.rows;
+  }
+
+  // ─── Catálogo de tipos de cliente ────────────────────────────────────────
+  async listarTiposCliente() {
+    const r = await this.pool.query(
+      "SELECT id_tipo_cliente, nombre FROM tipo_cliente WHERE activo=true ORDER BY nombre",
     );
     return r.rows;
   }

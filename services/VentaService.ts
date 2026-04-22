@@ -127,15 +127,36 @@ export class VentaService {
         if (clienteRes.rows.length > 0) {
           id_cliente = clienteRes.rows[0].id_cliente;
         } else if (data.cliente_nuevo) {
+          // ── Resolver id_tipo_cliente desde el catálogo ─────────────────────
+          // El frontend envía tipo_cliente como string (ej. 'particular').
+          // Se busca el id correspondiente; si no existe, se usa 'particular'.
+          const tipoRes = await client.query(
+            `SELECT id_tipo_cliente FROM tipo_cliente
+             WHERE LOWER(nombre) = LOWER($1) AND activo = true
+             LIMIT 1`,
+            [data.cliente_nuevo.tipo_cliente ?? "particular"],
+          );
+
+          let id_tipo_cliente: number;
+          if (tipoRes.rows.length > 0) {
+            id_tipo_cliente = tipoRes.rows[0].id_tipo_cliente;
+          } else {
+            const fallbackRes = await client.query(
+              `SELECT id_tipo_cliente FROM tipo_cliente
+               WHERE nombre = 'particular' LIMIT 1`,
+            );
+            id_tipo_cliente = fallbackRes.rows[0].id_tipo_cliente;
+          }
+
           const insertCliente = await client.query(
             `INSERT INTO cliente
-               (nombre_razon_social, nit, tipo_cliente, telefono, email,
+               (nombre_razon_social, nit, id_tipo_cliente, telefono, email,
                 direccion, id_municipio, notas_internas)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id_cliente`,
             [
               data.cliente_nuevo.nombre_razon_social,
               data.nit,
-              data.cliente_nuevo.tipo_cliente,
+              id_tipo_cliente,
               data.cliente_nuevo.telefono,
               data.cliente_nuevo.email,
               data.cliente_nuevo.direccion,
@@ -161,11 +182,12 @@ export class VentaService {
 
       for (const det of data.detalles) {
         if (det.id_producto_reacondicionado) {
-          // ── Producto reacondicionado (sin cambios) ─────────────────────────
+          // ── Producto reacondicionado ───────────────────────────────────────
+          // disponibilidad = cantidad > 0 (estado eliminado de la tabla)
           const reacRes = await client.query(
             `SELECT precio_venta_reac, cantidad
              FROM lote_reacondicionado
-             WHERE id_lote = $1 AND id_sucursal = $2 AND estado = 'disponible'
+             WHERE id_lote = $1 AND id_sucursal = $2 AND cantidad > 0
              FOR UPDATE`,
             [det.id_producto_reacondicionado, data.id_sucursal],
           );
@@ -179,10 +201,10 @@ export class VentaService {
             );
           }
 
+          // Solo descuenta cantidad — columna estado fue eliminada
           await client.query(
             `UPDATE lote_reacondicionado
-             SET cantidad = cantidad - $1,
-                 estado = CASE WHEN cantidad - $1 <= 0 THEN 'vendido' ELSE 'disponible' END
+             SET cantidad = cantidad - $1
              WHERE id_lote = $2`,
             [det.cantidad, det.id_producto_reacondicionado],
           );
@@ -315,7 +337,7 @@ export class VentaService {
            RETURNING id_movimiento`,
           [
             det.id_inventario,
-            id_usuario, //id del usuario autenticado (desde el token JWT)
+            id_usuario,
             det.cantidad,
             cantidadResultante,
             id_venta,
@@ -331,9 +353,8 @@ export class VentaService {
           id_movimiento,
         ]);
       }
-      // ────────────────────────────────────────────────────────────────────────
 
-      // ── Pedido a domicilio (sin cambios) ────────────────────────────────────
+      // ── Pedido a domicilio ──────────────────────────────────────────────────
       if (data.canal === "domicilio" && data.direccion_entrega) {
         const destRes = await client.query(
           `INSERT INTO destinatario
@@ -456,15 +477,12 @@ export class VentaService {
       if (venta.estado !== "pendiente_autorizacion")
         throw new Error("La venta no está pendiente de autorización");
 
-      // ── Determinar el estado destino (igual para aprobado y rechazado,
-      //    porque en ambos casos la venta continúa su flujo normal) ──────────
       const estadoDestino =
         venta.canal === "domicilio" && venta.pago_contra_entrega
           ? "pendiente_cobro_contra_entrega"
           : "pendiente_pago";
 
       if (aprobado) {
-        // ── APROBADO: aplicar el descuento original solicitado ───────────────
         await client.query(
           `UPDATE venta
            SET estado               = $1,
@@ -488,14 +506,8 @@ export class VentaService {
           ],
         );
       } else {
-        // ── RECHAZADO: aplicar descuento base del 5% automáticamente ─────────
-        // El supervisor no aprueba el descuento solicitado (>5%), pero la venta
-        // no muere. Se aplica el 5% máximo permitido sin autorización y
-        // la venta continúa hacia cobro/pago normalmente.
-
         const subtotal = Number(venta.subtotal);
-        const descuentoBase = 0.05; // 5%
-        const nuevoDescuento = Math.round(subtotal * descuentoBase * 100) / 100;
+        const nuevoDescuento = Math.round(subtotal * 0.05 * 100) / 100;
         const nuevoTotal = Math.round((subtotal - nuevoDescuento) * 100) / 100;
 
         await client.query(
@@ -526,11 +538,6 @@ export class VentaService {
             }),
           ],
         );
-
-        // ── NOTA: el stock NO se toca. ────────────────────────────────────────
-        // A diferencia del comportamiento anterior (que reintegraba todo),
-        // aquí la venta sigue adelante con el 5% de descuento aplicado.
-        // Los productos permanecen reservados para esta venta.
       }
 
       await client.query("COMMIT");
