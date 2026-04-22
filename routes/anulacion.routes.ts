@@ -11,6 +11,11 @@ export function crearAnulacionRouter(dbPool: Pool): Router {
 
   // Solo supervisores y administradores pueden anular ventas
   router.patch("/:id/anular", verificarToken, controller.anularVenta);
+  router.patch(
+    "/:id/reagendar-entrega",
+    verificarToken,
+    controller.reagendarEntrega,
+  );
 
   return router;
 }

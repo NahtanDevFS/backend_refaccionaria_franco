@@ -10,6 +10,7 @@ export class VentaService {
       FROM venta v
       LEFT JOIN cliente  c ON v.id_cliente  = c.id_cliente
       LEFT JOIN empleado e ON v.id_vendedor = e.id_empleado
+      LEFT JOIN pedido_domicilio pd ON pd.id_venta = v.id_venta
       WHERE 1=1
     `;
 
@@ -58,15 +59,17 @@ export class VentaService {
     let dataQuery =
       `SELECT
         v.id_venta,
-        v.created_at as fecha,
-        COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente,
-        CONCAT(e.nombre, ' ', e.apellido) as vendedor,
+        v.created_at                                          AS fecha,
+        COALESCE(c.nombre_razon_social, 'Consumidor Final')   AS cliente,
+        CONCAT(e.nombre, ' ', e.apellido)                     AS vendedor,
         v.canal,
         v.subtotal,
-        v.descuento_monto as descuento,
+        v.descuento_monto                                     AS descuento,
         v.monto_iva,
         v.total,
-        v.estado
+        v.estado,
+        pd.estado                                             AS estado_pedido,
+        pd.motivo_fallido
       ` + baseQuery;
 
     dataQuery += ` ORDER BY v.created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1};`;
@@ -84,6 +87,8 @@ export class VentaService {
       descuento: Number(row.descuento),
       monto_iva: Number(row.monto_iva),
       total: Number(row.total),
+      estado_pedido: row.estado_pedido ?? null,
+      motivo_fallido: row.motivo_fallido ?? null,
     }));
 
     return { data, total };
@@ -547,11 +552,18 @@ export class VentaService {
         CONCAT(ev.nombre, ' ', ev.apellido)                  AS vendedor,
         CONCAT(ea.nombre, ' ', ea.apellido)                  AS anulado_por,
         v.motivo_anulacion,
-        v.monto_devolucion
+        v.monto_devolucion,
+        pd.id_pedido,
+        pd.estado                                            AS estado_pedido,
+        pd.motivo_fallido,
+        pd.id_repartidor                                     AS id_repartidor_actual,
+        CONCAT(er.nombre, ' ', er.apellido)                  AS repartidor_actual
       FROM venta v
-      LEFT JOIN cliente  c  ON v.id_cliente    = c.id_cliente
-      LEFT JOIN empleado ev ON v.id_vendedor   = ev.id_empleado
+      LEFT JOIN cliente  c  ON v.id_cliente     = c.id_cliente
+      LEFT JOIN empleado ev ON v.id_vendedor    = ev.id_empleado
       LEFT JOIN empleado ea ON v.id_anulado_por = ea.id_empleado
+      LEFT JOIN pedido_domicilio pd ON pd.id_venta = v.id_venta
+      LEFT JOIN empleado er ON pd.id_repartidor = er.id_empleado
       WHERE v.id_venta = $1;
     `;
 

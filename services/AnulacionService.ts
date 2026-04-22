@@ -202,4 +202,74 @@ export class AnulacionService {
     if (res.rows.length === 0) return null;
     return res.rows[0];
   }
+
+  async reagendarEntrega(
+    id_venta: number,
+    id_repartidor_nuevo: number,
+    id_usuario: number,
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      // 1. Verificar que existe el pedido fallido para esta venta
+      const pedidoRes = await client.query(
+        `SELECT pd.id_pedido, v.id_sucursal, v.estado
+         FROM pedido_domicilio pd
+         JOIN venta v ON pd.id_venta = v.id_venta
+         WHERE pd.id_venta = $1
+           AND pd.estado   = 'fallido'
+         FOR UPDATE`,
+        [id_venta],
+      );
+
+      if (pedidoRes.rows.length === 0)
+        throw new Error("No se encontró un pedido fallido para esta venta.");
+
+      const { id_pedido, id_sucursal, estado: estadoVenta } = pedidoRes.rows[0];
+
+      // 2. Verificar que la venta sigue en estado entregable
+      const estadosValidos = ["pagada", "pendiente_cobro_contra_entrega"];
+      if (!estadosValidos.includes(estadoVenta))
+        throw new Error(
+          `La venta está en estado '${estadoVenta}' y no puede reagendarse.`,
+        );
+
+      // 3. Verificar que el repartidor existe, pertenece a la sucursal y está activo
+      const repRes = await client.query(
+        `SELECT e.id_empleado
+         FROM empleado e
+         JOIN puesto p ON e.id_puesto = p.id_puesto
+         WHERE e.id_empleado = $1
+           AND e.id_sucursal = $2
+           AND e.activo      = true
+           AND p.nombre ILIKE '%repartidor%'`,
+        [id_repartidor_nuevo, id_sucursal],
+      );
+
+      if (repRes.rows.length === 0)
+        throw new Error(
+          "El repartidor seleccionado no existe o no pertenece a esta sucursal.",
+        );
+
+      // 4. Resetear el pedido — como si fuera nuevo
+      await client.query(
+        `UPDATE pedido_domicilio
+         SET estado         = 'pendiente',
+             id_repartidor  = $1,
+             motivo_fallido = NULL,
+             fecha_entrega  = NULL,
+             updated_at     = NOW()
+         WHERE id_pedido = $2`,
+        [id_repartidor_nuevo, id_pedido],
+      );
+
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
 }
