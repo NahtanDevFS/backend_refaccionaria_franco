@@ -13,6 +13,7 @@ export function crearEntregaRouter(dbPool: Pool): Router {
   router.get("/comprobante/:id_pago", controller.obtenerComprobante);
   router.post("/:id/exito", controller.marcarExito);
   router.post("/:id/fallida", controller.marcarFallida);
+  router.patch("/:id/confirmar-cancelacion", controller.confirmarCancelacion);
 
   return router;
 }

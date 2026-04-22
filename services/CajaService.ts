@@ -86,9 +86,10 @@ export class CajaService {
     const result = await this.pool.query(
       `SELECT metodo_pago, COALESCE(SUM(monto), 0) AS total
        FROM pago
-       WHERE id_cajero = $1
+       WHERE id_cajero    = $1
          AND DATE(fecha_pago) = CURRENT_DATE
-         AND id_arqueo IS NULL
+         AND id_arqueo    IS NULL
+         AND activo       = true          
        GROUP BY metodo_pago`,
       [id_cajero],
     );
@@ -115,9 +116,10 @@ export class CajaService {
        LEFT JOIN cliente      c ON v.id_cliente    = c.id_cliente
        LEFT JOIN pedido_domicilio pd ON pd.id_venta       = v.id_venta
        LEFT JOIN destinatario     d  ON pd.id_destinatario = d.id_destinatario
-       WHERE p.id_cajero IS NULL
+       WHERE p.id_cajero    IS NULL
          AND p.id_repartidor IS NOT NULL
-         AND v.id_sucursal = $1
+         AND p.activo        = true      
+         AND v.id_sucursal   = $1
        ORDER BY p.fecha_pago ASC`,
       [id_sucursal],
     );
@@ -149,10 +151,11 @@ export class CajaService {
         `SELECT COUNT(*) AS total
          FROM pago p
          JOIN venta v ON p.id_venta = v.id_venta
-         WHERE p.id_pago = ANY($1::int[])
-           AND p.id_repartidor = $2
-           AND p.id_cajero IS NULL
-           AND v.id_sucursal = $3`,
+         WHERE p.id_pago        = ANY($1::int[])
+           AND p.id_repartidor  = $2
+           AND p.id_cajero      IS NULL
+           AND p.activo         = true  
+           AND v.id_sucursal    = $3`,
         [id_pagos, id_repartidor, id_sucursal],
       );
 
@@ -207,8 +210,9 @@ export class CajaService {
        LEFT JOIN cliente   c  ON v.id_cliente    = c.id_cliente
        LEFT JOIN empleado  ec ON p.id_cajero     = ec.id_empleado
        LEFT JOIN empleado  er ON p.id_repartidor = er.id_empleado
-       WHERE v.id_sucursal = $1
+       WHERE v.id_sucursal     = $1
          AND DATE(p.fecha_pago) BETWEEN $2 AND $3
+         AND p.activo           = true    
        ORDER BY p.fecha_pago DESC`,
       [id_sucursal, fechaDesde, fechaHasta],
     );

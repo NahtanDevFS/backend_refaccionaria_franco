@@ -28,11 +28,13 @@ export class ArqueoService {
 
       // 1. Efectivo del sistema (solo efectivo no arquiado del día)
       const resResumen = await client.query(
-        `SELECT COALESCE(SUM(monto), 0) AS total FROM pago
-         WHERE id_cajero = $1
+        `SELECT COALESCE(SUM(monto), 0) AS total
+         FROM pago
+         WHERE id_cajero      = $1
            AND DATE(fecha_pago) = CURRENT_DATE
-           AND metodo_pago = 'efectivo'
-           AND id_arqueo IS NULL`,
+           AND metodo_pago    = 'efectivo'
+           AND id_arqueo      IS NULL
+           AND activo         = true`,
         [dto.id_cajero],
       );
       const efectivoSistema = Number(resResumen.rows[0].total);
@@ -64,10 +66,12 @@ export class ArqueoService {
 
       // 4. Asociar pagos del día al arqueo
       await client.query(
-        `UPDATE pago SET id_arqueo = $1
-         WHERE id_cajero = $2
+        `UPDATE pago
+         SET id_arqueo = $1
+         WHERE id_cajero      = $2
            AND DATE(fecha_pago) = CURRENT_DATE
-           AND id_arqueo IS NULL`,
+           AND id_arqueo      IS NULL
+           AND activo         = true`,
         [arqueoRegistrado.id_arqueo, dto.id_cajero],
       );
 

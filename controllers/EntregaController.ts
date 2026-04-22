@@ -115,4 +115,20 @@ export class EntregaController {
       res.status(500).json({ success: false, message: error.message });
     }
   };
+
+  confirmarCancelacion = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const id_pedido = Number(req.params.id);
+      const id_repartidor = req.usuario!.id_empleado;
+
+      await this.entregaService.confirmarCancelacion(id_repartidor, id_pedido);
+
+      res.status(200).json({
+        success: true,
+        message: "Cancelación confirmada correctamente.",
+      });
+    } catch (error: any) {
+      res.status(400).json({ success: false, message: error.message });
+    }
+  };
 }

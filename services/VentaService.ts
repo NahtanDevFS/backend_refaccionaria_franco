@@ -441,7 +441,7 @@ export class VentaService {
       await client.query("BEGIN");
 
       const ventaRes = await client.query(
-        `SELECT estado, canal, pago_contra_entrega, id_sucursal
+        `SELECT estado, canal, pago_contra_entrega, id_sucursal, subtotal
          FROM venta WHERE id_venta = $1 FOR UPDATE`,
         [id_venta],
       );
@@ -451,118 +451,81 @@ export class VentaService {
       if (venta.estado !== "pendiente_autorizacion")
         throw new Error("La venta no está pendiente de autorización");
 
-      let nuevoEstado = "rechazada";
+      // ── Determinar el estado destino (igual para aprobado y rechazado,
+      //    porque en ambos casos la venta continúa su flujo normal) ──────────
+      const estadoDestino =
+        venta.canal === "domicilio" && venta.pago_contra_entrega
+          ? "pendiente_cobro_contra_entrega"
+          : "pendiente_pago";
+
       if (aprobado) {
-        nuevoEstado =
-          venta.canal === "domicilio" && venta.pago_contra_entrega
-            ? "pendiente_cobro_contra_entrega"
-            : "pendiente_pago";
-      }
-
-      await client.query(
-        `UPDATE venta
-         SET estado = $1, id_supervisor_autoriza = $2, updated_at = NOW()
-         WHERE id_venta = $3`,
-        [nuevoEstado, id_supervisor, id_venta],
-      );
-
-      await client.query(
-        `INSERT INTO log_auditoria
-           (id_usuario, tabla_afectada, accion, id_registro, datos_nuevos)
-         VALUES ($1, 'venta', $2, $3, $4)`,
-        [
-          id_usuario_log,
-          aprobado ? "aprobacion_descuento" : "rechazo_descuento",
-          id_venta,
-          JSON.stringify({
-            estado: nuevoEstado,
-            id_supervisor_autoriza: id_supervisor,
-          }),
-        ],
-      );
-
-      if (!aprobado) {
-        // Obtener todos los productos normales (no reacondicionados) de la venta
-        const detallesRes = await client.query(
-          `SELECT dv.id_producto, dv.cantidad, i.id_inventario
-           FROM detalle_venta dv
-           JOIN inventario_sucursal i
-             ON dv.id_producto = i.id_producto
-            AND i.id_sucursal  = $2
-           WHERE dv.id_venta = $1
-             AND dv.id_producto_reacondicionado IS NULL`,
-          [id_venta, venta.id_sucursal],
+        // ── APROBADO: aplicar el descuento original solicitado ───────────────
+        await client.query(
+          `UPDATE venta
+           SET estado               = $1,
+               id_supervisor_autoriza = $2,
+               updated_at           = NOW()
+           WHERE id_venta = $3`,
+          [estadoDestino, id_supervisor, id_venta],
         );
 
-        for (const det of detallesRes.rows) {
-          const cantidadDevuelta = Number(det.cantidad);
+        await client.query(
+          `INSERT INTO log_auditoria
+             (id_usuario, tabla_afectada, accion, id_registro, datos_nuevos)
+           VALUES ($1, 'venta', 'aprobacion_descuento', $2, $3)`,
+          [
+            id_usuario_log,
+            id_venta,
+            JSON.stringify({
+              estado: estadoDestino,
+              id_supervisor_autoriza: id_supervisor,
+            }),
+          ],
+        );
+      } else {
+        // ── RECHAZADO: aplicar descuento base del 5% automáticamente ─────────
+        // El supervisor no aprueba el descuento solicitado (>5%), pero la venta
+        // no muere. Se aplica el 5% máximo permitido sin autorización y
+        // la venta continúa hacia cobro/pago normalmente.
 
-          // 1. Reintegrar stock en inventario_sucursal (idéntico al original)
-          await client.query(
-            `UPDATE inventario_sucursal
-             SET cantidad_actual = cantidad_actual + $1
-             WHERE id_inventario = $2`,
-            [cantidadDevuelta, det.id_inventario],
-          );
+        const subtotal = Number(venta.subtotal);
+        const descuentoBase = 0.05; // 5%
+        const nuevoDescuento = Math.round(subtotal * descuentoBase * 100) / 100;
+        const nuevoTotal = Math.round((subtotal - nuevoDescuento) * 100) / 100;
 
-          const nuevaCantRes = await client.query(
-            `SELECT cantidad_actual FROM inventario_sucursal WHERE id_inventario = $1`,
-            [det.id_inventario],
-          );
-          const cantidadResultante = Number(
-            nuevaCantRes.rows[0].cantidad_actual,
-          );
+        await client.query(
+          `UPDATE venta
+           SET estado                = $1,
+               id_supervisor_autoriza = $2,
+               descuento_monto       = $3,
+               total                 = $4,
+               updated_at            = NOW()
+           WHERE id_venta = $5`,
+          [estadoDestino, id_supervisor, nuevoDescuento, nuevoTotal, id_venta],
+        );
 
-          // 2. Registrar el movimiento de devolución
-          const movRes = await client.query(
-            `INSERT INTO movimiento_inventario
-               (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante,
-                id_referencia, tabla_referencia, motivo)
-             VALUES ($1, $2, 'ajuste_positivo', $3, $4, $5, 'venta',
-                     'Devolución por rechazo de autorización de descuento')
-             RETURNING id_movimiento`,
-            [
-              det.id_inventario,
-              id_usuario_log,
-              cantidadDevuelta,
-              cantidadResultante,
-              id_venta,
-            ],
-          );
+        await client.query(
+          `INSERT INTO log_auditoria
+             (id_usuario, tabla_afectada, accion, id_registro, datos_nuevos)
+           VALUES ($1, 'venta', 'rechazo_con_descuento_base', $2, $3)`,
+          [
+            id_usuario_log,
+            id_venta,
+            JSON.stringify({
+              estado: estadoDestino,
+              id_supervisor_autoriza: id_supervisor,
+              descuento_aplicado: nuevoDescuento,
+              total_resultante: nuevoTotal,
+              motivo:
+                "Descuento solicitado rechazado — se aplica 5% base automáticamente",
+            }),
+          ],
+        );
 
-          // ── FIFO: crear lote de reingreso ──────────────────────────────────
-          // Los lotes originales ya fueron consumidos cuando se creó la venta.
-          // La mercadería re-entra como un lote nuevo con fecha actual y el
-          // costo del proveedor principal como referencia de costo.
-          const costoRes = await client.query(
-            `SELECT COALESCE(
-               (SELECT precio_costo
-                FROM   producto_proveedor
-                WHERE  id_producto  = $1
-                  AND  es_principal = TRUE
-                  AND  activo       = TRUE
-                LIMIT 1),
-               0.00
-             ) AS costo_unitario`,
-            [det.id_producto],
-          );
-
-          const costoUnitario = Number(costoRes.rows[0].costo_unitario);
-
-          await client.query(
-            `INSERT INTO lote_inventario
-               (id_producto, id_sucursal,
-                costo_unitario, cantidad_inicial, cantidad_actual, fecha_ingreso)
-             VALUES ($1, $2, $3, $4, $4, NOW())`,
-            [
-              det.id_producto,
-              venta.id_sucursal,
-              costoUnitario,
-              cantidadDevuelta,
-            ],
-          );
-          // ────────────────────────────────────────────────────────────────────
-        }
+        // ── NOTA: el stock NO se toca. ────────────────────────────────────────
+        // A diferencia del comportamiento anterior (que reintegraba todo),
+        // aquí la venta sigue adelante con el 5% de descuento aplicado.
+        // Los productos permanecen reservados para esta venta.
       }
 
       await client.query("COMMIT");
@@ -578,11 +541,17 @@ export class VentaService {
     id_venta: number,
   ): Promise<{ venta: any; detalles: any[] } | null> {
     const queryVenta = `
-      SELECT v.*, COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente,
-             CONCAT(e.nombre, ' ', e.apellido) as vendedor
+      SELECT
+        v.*,
+        COALESCE(c.nombre_razon_social, 'Consumidor Final')  AS cliente,
+        CONCAT(ev.nombre, ' ', ev.apellido)                  AS vendedor,
+        CONCAT(ea.nombre, ' ', ea.apellido)                  AS anulado_por,
+        v.motivo_anulacion,
+        v.monto_devolucion
       FROM venta v
-      LEFT JOIN cliente  c ON v.id_cliente  = c.id_cliente
-      LEFT JOIN empleado e ON v.id_vendedor = e.id_empleado
+      LEFT JOIN cliente  c  ON v.id_cliente    = c.id_cliente
+      LEFT JOIN empleado ev ON v.id_vendedor   = ev.id_empleado
+      LEFT JOIN empleado ea ON v.id_anulado_por = ea.id_empleado
       WHERE v.id_venta = $1;
     `;
 
