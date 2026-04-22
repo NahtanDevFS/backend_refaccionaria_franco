@@ -66,7 +66,9 @@ export class BodegaService {
             SUM(ld.cantidad_actual * ld.costo_unitario) / NULLIF(SUM(ld.cantidad_actual), 0),
             2
           ) AS costo_promedio_ponderado,
-          COUNT(*) AS total_lotes
+          COUNT(DISTINCT ld.id_lote) AS total_lotes
+          -- Contar lotes distintos (id_lote), no filas de lote_detalle.
+          -- Un traslado genera múltiples filas del mismo id_lote.
         FROM lote_detalle ld
         WHERE ld.id_producto = p.id_producto
           AND ld.id_sucursal = i.id_sucursal
