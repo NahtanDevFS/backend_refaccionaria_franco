@@ -227,34 +227,37 @@ export class VentaService {
             esReacondicionado: true,
           });
         } else {
-          // MIGRACIÓN: reemplaza SELECT FROM inventario_sucursal FOR UPDATE
-          // El stock real viene de lote_detalle; el FOR UPDATE lo hacemos sobre
-          // producto_sucursal para garantizar la exclusión mutua de la transacción.
-          const stockRes = await client.query(
-            `SELECT
-               ps.id_producto_sucursal,
-               p.precio_venta,
-               COALESCE(SUM(ld.cantidad_actual), 0) AS cantidad_actual
+          // MIGRACIÓN: FOR UPDATE sobre producto_sucursal (sin GROUP BY — no compatible)
+          // Primero bloqueamos la fila, luego calculamos el stock por separado.
+          const psRes = await client.query(
+            `SELECT ps.id_producto_sucursal, p.precio_venta
              FROM producto_sucursal ps
              JOIN producto p ON ps.id_producto = p.id_producto
-             LEFT JOIN lote_detalle ld
-               ON ld.id_producto = ps.id_producto
-              AND ld.id_sucursal = ps.id_sucursal
-              AND ld.agotado = FALSE
-              AND ld.activo  = TRUE
              WHERE ps.id_producto = $1
                AND ps.id_sucursal = $2
                AND ps.activo = TRUE
-             GROUP BY ps.id_producto_sucursal, p.precio_venta
              FOR UPDATE OF ps`,
             [det.id_producto, data.id_sucursal],
           );
 
-          if (stockRes.rows.length === 0)
+          if (psRes.rows.length === 0)
             throw new Error(
               `Producto ${det.id_producto} sin inventario en esta sucursal`,
             );
-          if (Number(stockRes.rows[0].cantidad_actual) < det.cantidad)
+
+          const stockRes = await client.query(
+            `SELECT COALESCE(SUM(cantidad_actual), 0) AS cantidad_actual
+             FROM lote_detalle
+             WHERE id_producto = $1
+               AND id_sucursal = $2
+               AND agotado = FALSE
+               AND activo  = TRUE`,
+            [det.id_producto, data.id_sucursal],
+          );
+
+          const cantidad_actual = Number(stockRes.rows[0].cantidad_actual);
+
+          if (cantidad_actual < det.cantidad)
             throw new Error(
               `Stock insuficiente para producto ${det.id_producto}`,
             );
@@ -262,8 +265,8 @@ export class VentaService {
           detallesCalculados.push({
             id_producto: det.id_producto,
             cantidad: det.cantidad,
-            precioUnitario: Number(stockRes.rows[0].precio_venta),
-            id_producto_sucursal: stockRes.rows[0].id_producto_sucursal,
+            precioUnitario: Number(psRes.rows[0].precio_venta),
+            id_producto_sucursal: psRes.rows[0].id_producto_sucursal,
             esReacondicionado: false,
           });
         }

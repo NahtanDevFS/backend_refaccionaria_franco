@@ -207,34 +207,41 @@ export class BodegaService {
 
       for (const det of data.detalles) {
         // MIGRACIÓN: reemplaza SELECT FROM inventario_sucursal FOR UPDATE
-        const stockRes = await client.query(
-          `SELECT
-             ps.id_producto_sucursal,
-             COALESCE(SUM(ld.cantidad_actual), 0) AS cantidad_actual
+        // FOR UPDATE simple (sin GROUP BY — no son compatibles en PostgreSQL)
+        const psRes = await client.query(
+          `SELECT ps.id_producto_sucursal
            FROM producto_sucursal ps
-           LEFT JOIN lote_detalle ld
-             ON ld.id_producto = ps.id_producto
-            AND ld.id_sucursal = ps.id_sucursal
-            AND ld.agotado = FALSE
-            AND ld.activo  = TRUE
            WHERE ps.id_producto = $1
              AND ps.id_sucursal = $2
              AND ps.activo      = TRUE
-           GROUP BY ps.id_producto_sucursal
            FOR UPDATE OF ps`,
           [det.id_producto, id_sucursal_origen],
         );
 
-        if (
-          stockRes.rows.length === 0 ||
-          Number(stockRes.rows[0].cantidad_actual) < det.cantidad
-        ) {
+        if (psRes.rows.length === 0) {
           throw new Error(
             `Stock insuficiente para el producto ID: ${det.id_producto}`,
           );
         }
 
-        const id_producto_sucursal = stockRes.rows[0].id_producto_sucursal;
+        const id_producto_sucursal = psRes.rows[0].id_producto_sucursal;
+
+        const stockRes = await client.query(
+          `SELECT COALESCE(SUM(cantidad_actual), 0) AS cantidad_actual
+           FROM lote_detalle
+           WHERE id_producto = $1
+             AND id_sucursal = $2
+             AND agotado = FALSE
+             AND activo  = TRUE`,
+          [det.id_producto, id_sucursal_origen],
+        );
+
+        if (Number(stockRes.rows[0].cantidad_actual) < det.cantidad) {
+          throw new Error(
+            `Stock insuficiente para el producto ID: ${det.id_producto}`,
+          );
+        }
+
         const nueva_cantidad =
           Number(stockRes.rows[0].cantidad_actual) - det.cantidad;
 
@@ -524,21 +531,13 @@ export class BodegaService {
     try {
       await client.query("BEGIN");
 
-      // MIGRACIÓN: reemplaza SELECT FROM inventario_sucursal FOR UPDATE
+      // FOR UPDATE simple (sin GROUP BY — no son compatibles en PostgreSQL)
       const psRes = await client.query(
-        `SELECT
-           ps.id_producto_sucursal,
-           COALESCE(SUM(ld.cantidad_actual), 0) AS cantidad_actual
+        `SELECT ps.id_producto_sucursal
          FROM producto_sucursal ps
-         LEFT JOIN lote_detalle ld
-           ON ld.id_producto = ps.id_producto
-          AND ld.id_sucursal = ps.id_sucursal
-          AND ld.agotado = FALSE
-          AND ld.activo  = TRUE
          WHERE ps.id_producto = $1
            AND ps.id_sucursal = $2
            AND ps.activo = TRUE
-         GROUP BY ps.id_producto_sucursal
          FOR UPDATE OF ps`,
         [data.id_producto, id_sucursal],
       );
@@ -547,7 +546,18 @@ export class BodegaService {
         throw new Error("Producto no registrado en esta sucursal");
 
       const id_producto_sucursal = psRes.rows[0].id_producto_sucursal;
-      const cantidad_actual = Number(psRes.rows[0].cantidad_actual);
+
+      const stockRes = await client.query(
+        `SELECT COALESCE(SUM(cantidad_actual), 0) AS cantidad_actual
+         FROM lote_detalle
+         WHERE id_producto = $1
+           AND id_sucursal = $2
+           AND agotado = FALSE
+           AND activo  = TRUE`,
+        [data.id_producto, id_sucursal],
+      );
+
+      const cantidad_actual = Number(stockRes.rows[0].cantidad_actual);
 
       let nueva_cantidad = cantidad_actual;
       if (data.tipo === "ajuste_positivo") nueva_cantidad += data.cantidad;

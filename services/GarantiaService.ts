@@ -108,36 +108,43 @@ export class GarantiaService {
 
       if (data.aprobado) {
         // ── Validar stock real desde lote_detalle ──────────────────────────
-        // MIGRACIÓN: reemplaza SELECT FROM inventario_sucursal FOR UPDATE
-        const stockRes = await client.query(
-          `SELECT
-             ps.id_producto_sucursal,
-             COALESCE(SUM(ld.cantidad_actual), 0) AS cantidad_actual
+        // FOR UPDATE simple sin GROUP BY (no son compatibles en PostgreSQL)
+        const psRes = await client.query(
+          `SELECT ps.id_producto_sucursal
            FROM producto_sucursal ps
-           LEFT JOIN lote_detalle ld
-             ON ld.id_producto = ps.id_producto
-            AND ld.id_sucursal = ps.id_sucursal
-            AND ld.agotado = FALSE
-            AND ld.activo  = TRUE
            WHERE ps.id_producto = $1
              AND ps.id_sucursal = $2
              AND ps.activo = TRUE
-           GROUP BY ps.id_producto_sucursal
            FOR UPDATE OF ps`,
           [garantia.id_producto, garantia.id_sucursal],
         );
 
-        if (
-          stockRes.rows.length === 0 ||
-          Number(stockRes.rows[0].cantidad_actual) < garantia.cantidad
-        ) {
+        if (psRes.rows.length === 0) {
           throw new Error(
             "Sin stock disponible para este repuesto en la sucursal. " +
               "La garantía permanecerá pendiente hasta que ingrese mercadería.",
           );
         }
 
-        const id_producto_sucursal = stockRes.rows[0].id_producto_sucursal;
+        const id_producto_sucursal = psRes.rows[0].id_producto_sucursal;
+
+        const stockRes = await client.query(
+          `SELECT COALESCE(SUM(cantidad_actual), 0) AS cantidad_actual
+           FROM lote_detalle
+           WHERE id_producto = $1
+             AND id_sucursal = $2
+             AND agotado = FALSE
+             AND activo  = TRUE`,
+          [garantia.id_producto, garantia.id_sucursal],
+        );
+
+        if (Number(stockRes.rows[0].cantidad_actual) < garantia.cantidad) {
+          throw new Error(
+            "Sin stock disponible para este repuesto en la sucursal. " +
+              "La garantía permanecerá pendiente hasta que ingrese mercadería.",
+          );
+        }
+
         const nueva_cantidad =
           Number(stockRes.rows[0].cantidad_actual) - Number(garantia.cantidad);
 
