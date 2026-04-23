@@ -16,6 +16,7 @@ export class CajaService {
        LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
        WHERE v.id_sucursal = $1
          AND v.estado IN ('pendiente_pago')
+         AND v.pago_contra_entrega = false
        ORDER BY v.created_at ASC`,
       [id_sucursal],
     );

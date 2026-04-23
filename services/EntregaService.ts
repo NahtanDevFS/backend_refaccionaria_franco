@@ -37,7 +37,7 @@ export class EntregaService {
           (
             pd.estado = 'pendiente'
             AND (
-              (v.pago_contra_entrega = true  AND v.estado = 'pendiente_cobro_contra_entrega')
+              (v.pago_contra_entrega = true AND v.estado IN ('pendiente_cobro_contra_entrega', 'pendiente_pago'))
               OR
               (v.pago_contra_entrega = false AND v.estado = 'pagada')
             )

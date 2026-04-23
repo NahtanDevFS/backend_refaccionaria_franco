@@ -187,16 +187,8 @@ export class VentaService {
       const pctDescuento = data.descuento_porcentaje ?? 0;
       const esContraEntrega = data.pago_contra_entrega ?? false;
 
-      const umbralesSucursal = await client.query(
-        `SELECT descuento_max_sin_aprobacion FROM sucursal WHERE id_sucursal = $1`,
-        [data.id_sucursal],
-      );
-      const umbral = Number(
-        umbralesSucursal.rows[0]?.descuento_max_sin_aprobacion ?? 5,
-      );
-
       const estadoVenta =
-        pctDescuento > umbral ? "pendiente_autorizacion" : "pendiente_pago";
+        pctDescuento > 5 ? "pendiente_autorizacion" : "pendiente_pago";
 
       const detallesCalculados: {
         id_producto: number;
@@ -473,13 +465,12 @@ export class VentaService {
     try {
       await client.query("BEGIN");
 
-      // Ahora leer canal via JOIN — no existe columna directa
       const ventaRes = await client.query(
         `SELECT v.estado, cv.nombre AS canal, v.pago_contra_entrega,
-                v.id_sucursal, v.subtotal
-         FROM venta v
-         JOIN canal_venta cv ON v.id_canal = cv.id_canal
-         WHERE v.id_venta = $1 FOR UPDATE`,
+              v.id_sucursal, v.subtotal
+       FROM venta v
+       JOIN canal_venta cv ON v.id_canal = cv.id_canal
+       WHERE v.id_venta = $1 FOR UPDATE`,
         [id_venta],
       );
       if (ventaRes.rows.length === 0) throw new Error("Venta no encontrada");
@@ -488,21 +479,15 @@ export class VentaService {
       if (venta.estado !== "pendiente_autorizacion")
         throw new Error("La venta no está pendiente de autorización");
 
-      let estadoDestino: string;
+      const estadoDestino =
+        venta.canal === "domicilio" && venta.pago_contra_entrega
+          ? "pendiente_cobro_contra_entrega"
+          : "pendiente_pago";
+
       let nuevoDescuento: number | null = null;
       let nuevoTotal: number | null = null;
 
-      if (aprobado) {
-        estadoDestino =
-          venta.canal === "domicilio" && venta.pago_contra_entrega
-            ? "pendiente_cobro_contra_entrega"
-            : "pendiente_pago";
-      } else {
-        // Rechazado: aplicar descuento máximo automático (5%)
-        estadoDestino =
-          venta.canal === "domicilio" && venta.pago_contra_entrega
-            ? "pendiente_cobro_contra_entrega"
-            : "pendiente_pago";
+      if (!aprobado) {
         nuevoDescuento = Number((Number(venta.subtotal) * 0.05).toFixed(2));
         nuevoTotal = Number((Number(venta.subtotal) * 0.95).toFixed(2));
       }
@@ -510,12 +495,12 @@ export class VentaService {
       if (!aprobado && nuevoDescuento !== null) {
         await client.query(
           `UPDATE venta
-           SET estado                = $1,
-               id_supervisor_autoriza = $2,
-               descuento_monto       = $3,
-               total                 = $4,
-               updated_by            = $5
-           WHERE id_venta = $6`,
+         SET estado                 = $1,
+             id_supervisor_autoriza = $2,
+             descuento_monto        = $3,
+             total                  = $4,
+             updated_by             = $5
+         WHERE id_venta = $6`,
           [
             estadoDestino,
             id_supervisor,
@@ -528,18 +513,18 @@ export class VentaService {
       } else {
         await client.query(
           `UPDATE venta
-           SET estado                = $1,
-               id_supervisor_autoriza = $2,
-               updated_by            = $3
-           WHERE id_venta = $4`,
+         SET estado                 = $1,
+             id_supervisor_autoriza = $2,
+             updated_by             = $3
+         WHERE id_venta = $4`,
           [estadoDestino, id_supervisor, id_usuario_log, id_venta],
         );
       }
 
       await client.query(
-        `INSERT INTO auditoria_acciones
-           (id_usuario, tabla_afectada, accion, id_registro, datos_nuevos)
-         VALUES ($1, 'venta', $2, $3, $4)`,
+        `INSERT INTO log_auditoria
+         (id_usuario, tabla_afectada, accion, id_registro, datos_nuevos)
+       VALUES ($1, 'venta', $2, $3, $4)`,
         [
           id_usuario_log,
           aprobado ? "aprobacion_descuento" : "rechazo_con_descuento_base",
@@ -564,7 +549,6 @@ export class VentaService {
       client.release();
     }
   }
-
   async obtenerVentaPorId(
     id_venta: number,
   ): Promise<{ venta: any; detalles: any[] } | null> {

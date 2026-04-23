@@ -18,7 +18,7 @@ export class AnulacionService {
 
       // ── 1. Obtener y bloquear la venta ──────────────────────────────────────
       const ventaRes = await client.query(
-        `SELECT v.id_venta, v.id_sucursal, v.estado, v.canal, v.total
+        `SELECT v.id_venta, v.id_sucursal, v.estado, v.total
         FROM venta v
         WHERE v.id_venta = $1
         FOR UPDATE`,
@@ -144,25 +144,36 @@ export class AnulacionService {
         if (!det.id_producto_reacondicionado) {
           const costoRes = await client.query(
             `SELECT COALESCE(
-               (SELECT precio_costo
-                FROM   producto_proveedor
-                WHERE  id_producto  = $1
-                  AND  es_principal = TRUE
-                  AND  activo       = TRUE
-                LIMIT 1),
-               0.00
-             ) AS costo_unitario`,
+       (SELECT precio_costo
+        FROM   producto_proveedor
+        WHERE  id_producto  = $1
+          AND  es_principal = TRUE
+          AND  activo       = TRUE
+        LIMIT 1),
+       0.00
+     ) AS costo_unitario`,
             [det.id_producto],
           );
 
           const costoUnitario = Number(costoRes.rows[0].costo_unitario);
 
-          await client.query(
+          // Crear cabecera del lote (sin orden de compra — es un reingreso)
+          const loteRes = await client.query(
             `INSERT INTO lote_inventario
-               (id_producto, id_sucursal,
-                costo_unitario, cantidad_inicial, cantidad_actual, fecha_ingreso)
-             VALUES ($1, $2, $3, $4, $4, NOW())`,
+       (id_orden_compra, es_apertura)
+     VALUES (NULL, false)
+     RETURNING id_lote`,
+          );
+          const id_lote = loteRes.rows[0].id_lote;
+
+          // Crear el detalle del lote con producto, sucursal y cantidades
+          await client.query(
+            `INSERT INTO lote_detalle
+       (id_lote, id_producto, id_sucursal, costo_unitario,
+        cantidad_inicial, cantidad_actual)
+     VALUES ($1, $2, $3, $4, $5, $5)`,
             [
+              id_lote,
               det.id_producto,
               venta.id_sucursal,
               costoUnitario,
