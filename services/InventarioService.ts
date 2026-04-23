@@ -12,13 +12,22 @@ export class InventarioService {
     }
 
     const query = `
-      SELECT 
+      SELECT
         p.id_producto, p.sku, p.nombre AS producto, p.precio_venta,
-        s.nombre AS sucursal, i.cantidad_actual AS stock_disponible, i.punto_reorden
+        s.nombre AS sucursal,
+        COALESCE(SUM(ld.cantidad_actual), 0) AS stock_disponible,
+        ps.punto_reorden
       FROM producto p
-      INNER JOIN inventario_sucursal i ON p.id_producto = i.id_producto
-      INNER JOIN sucursal s ON i.id_sucursal = s.id_sucursal
-      WHERE p.sku ILIKE $1 OR p.nombre ILIKE $1
+      INNER JOIN producto_sucursal ps ON p.id_producto = ps.id_producto
+      INNER JOIN sucursal s ON ps.id_sucursal = s.id_sucursal
+      LEFT JOIN lote_detalle ld
+        ON ld.id_producto = ps.id_producto
+       AND ld.id_sucursal = ps.id_sucursal
+       AND ld.agotado = FALSE
+       AND ld.activo  = TRUE
+      WHERE (p.sku ILIKE $1 OR p.nombre ILIKE $1)
+        AND ps.activo = TRUE
+      GROUP BY p.id_producto, p.sku, p.nombre, p.precio_venta, s.nombre, ps.punto_reorden
       ORDER BY p.nombre, s.id_sucursal;
     `;
 
@@ -58,19 +67,41 @@ export class InventarioService {
     idMarca?: number,
   ) {
     let query = `
-      SELECT 
+      SELECT
         p.id_producto, p.sku, p.nombre, p.precio_venta, m.nombre as marca_repuesto,
-        COALESCE(MAX(CASE WHEN i.id_sucursal = $1 THEN i.cantidad_actual END), 0) as stock_local,
-        COALESCE(
-          json_agg(
-            json_build_object('sucursal', s.nombre, 'cantidad', i.cantidad_actual)
-          ) FILTER (WHERE i.id_sucursal != $1 AND i.cantidad_actual > 0), '[]'
-        ) as stock_otras_sucursales
+        -- Stock local: suma de lotes activos en la sucursal del usuario
+        COALESCE((
+          SELECT SUM(ld.cantidad_actual)
+          FROM lote_detalle ld
+          WHERE ld.id_producto = p.id_producto
+            AND ld.id_sucursal = $1
+            AND ld.agotado = FALSE
+            AND ld.activo  = TRUE
+        ), 0) AS stock_local,
+        -- Stock en otras sucursales
+        COALESCE((
+          SELECT json_agg(json_build_object('sucursal', s2.nombre, 'cantidad', suc_stock.cantidad))
+          FROM (
+            SELECT ld2.id_sucursal, SUM(ld2.cantidad_actual) AS cantidad
+            FROM lote_detalle ld2
+            WHERE ld2.id_producto = p.id_producto
+              AND ld2.id_sucursal != $1
+              AND ld2.agotado = FALSE
+              AND ld2.activo  = TRUE
+            GROUP BY ld2.id_sucursal
+            HAVING SUM(ld2.cantidad_actual) > 0
+          ) suc_stock
+          JOIN sucursal s2 ON suc_stock.id_sucursal = s2.id_sucursal
+        ), '[]') AS stock_otras_sucursales
       FROM producto p
-      LEFT JOIN inventario_sucursal i ON p.id_producto = i.id_producto
-      LEFT JOIN sucursal s ON i.id_sucursal = s.id_sucursal
       LEFT JOIN marca m ON p.id_marca = m.id_marca
       WHERE p.activo = true
+        AND EXISTS (
+          SELECT 1 FROM producto_sucursal ps
+          WHERE ps.id_producto = p.id_producto
+            AND ps.id_sucursal = $1
+            AND ps.activo = TRUE
+        )
     `;
 
     const params: any[] = [idSucursalLocal];
@@ -94,7 +125,7 @@ export class InventarioService {
       paramIndex++;
     }
 
-    query += ` GROUP BY p.id_producto, m.nombre ORDER BY p.nombre ASC LIMIT 50;`;
+    query += ` ORDER BY p.nombre ASC LIMIT 50;`;
 
     const result = await this.pool.query(query, params);
     const normales = result.rows.map((row) => ({
@@ -106,14 +137,17 @@ export class InventarioService {
 
     if (normales.length === 0) return normales;
 
-    // BÚSQUEDA CONTEXTUAL DE REACONDICIONADOS
+    // Búsqueda contextual de reacondicionados para los mismos productos
     const ids = normales.map((n) => n.id_producto);
     const queryReac = `
-      SELECT lr.id_lote as id_producto_reacondicionado, lr.id_producto, lr.cantidad as stock_local, lr.precio_venta_reac as precio_venta,
-             p.sku, p.nombre, 'Pieza de Segunda Mano (Garantía)' as marca_repuesto
+      SELECT lr.id_lote AS id_producto_reacondicionado, lr.id_producto, lr.cantidad AS stock_local,
+             lr.precio_venta_reac AS precio_venta, p.sku, p.nombre,
+             'Pieza de Segunda Mano (Garantía)' AS marca_repuesto
       FROM lote_reacondicionado lr
       JOIN producto p ON lr.id_producto = p.id_producto
-      WHERE lr.id_sucursal = $1 AND lr.activo = true AND lr.cantidad > 0
+      WHERE lr.id_sucursal = $1
+        AND lr.activo = true
+        AND lr.cantidad > 0
         AND lr.id_producto = ANY($2::int[])
     `;
     const resReac = await this.pool.query(queryReac, [idSucursalLocal, ids]);
@@ -149,22 +183,42 @@ export class InventarioService {
     id_marca?: number,
   ) {
     let query = `
-      SELECT 
-          p.id_producto, p.sku, p.nombre, p.precio_venta, m.nombre as marca_repuesto,
-          COALESCE(MAX(CASE WHEN i.id_sucursal = $1 THEN i.cantidad_actual END), 0) as stock_local,
-          COALESCE(
-            json_agg(
-              json_build_object('sucursal', s.nombre, 'cantidad', i.cantidad_actual)
-            ) FILTER (WHERE i.id_sucursal != $1 AND i.cantidad_actual > 0), '[]'
-          ) as stock_otras_sucursales
+      SELECT
+        p.id_producto, p.sku, p.nombre, p.precio_venta, m.nombre AS marca_repuesto,
+        COALESCE((
+          SELECT SUM(ld.cantidad_actual)
+          FROM lote_detalle ld
+          WHERE ld.id_producto = p.id_producto
+            AND ld.id_sucursal = $1
+            AND ld.agotado = FALSE
+            AND ld.activo  = TRUE
+        ), 0) AS stock_local,
+        COALESCE((
+          SELECT json_agg(json_build_object('sucursal', s2.nombre, 'cantidad', suc_stock.cantidad))
+          FROM (
+            SELECT ld2.id_sucursal, SUM(ld2.cantidad_actual) AS cantidad
+            FROM lote_detalle ld2
+            WHERE ld2.id_producto = p.id_producto
+              AND ld2.id_sucursal != $1
+              AND ld2.agotado = FALSE
+              AND ld2.activo  = TRUE
+            GROUP BY ld2.id_sucursal
+            HAVING SUM(ld2.cantidad_actual) > 0
+          ) suc_stock
+          JOIN sucursal s2 ON suc_stock.id_sucursal = s2.id_sucursal
+        ), '[]') AS stock_otras_sucursales
       FROM producto p
-      LEFT JOIN inventario_sucursal i ON p.id_producto = i.id_producto
-      LEFT JOIN sucursal s ON i.id_sucursal = s.id_sucursal
       LEFT JOIN marca m ON p.id_marca = m.id_marca
       WHERE p.activo = true
         AND EXISTS (
-            SELECT 1 FROM compatibilidad_producto cp 
-            WHERE cp.id_producto = p.id_producto 
+          SELECT 1 FROM producto_sucursal ps
+          WHERE ps.id_producto = p.id_producto
+            AND ps.id_sucursal = $1
+            AND ps.activo = TRUE
+        )
+        AND EXISTS (
+          SELECT 1 FROM compatibilidad_producto cp
+          WHERE cp.id_producto = p.id_producto
             AND (cp.es_universal = true OR cp.id_modelo = $2)
             ${anio ? `AND (cp.es_universal = true OR ($3 >= cp.anio_desde AND $3 <= cp.anio_hasta))` : ""}
         )
@@ -187,7 +241,7 @@ export class InventarioService {
       paramIndex++;
     }
 
-    query += ` GROUP BY p.id_producto, m.nombre ORDER BY p.nombre ASC LIMIT 50;`;
+    query += ` ORDER BY p.nombre ASC LIMIT 50;`;
 
     const result = await this.pool.query(query, params);
     const normales = result.rows.map((r) => ({
@@ -199,23 +253,22 @@ export class InventarioService {
 
     if (normales.length === 0) return normales;
 
-    // BÚSQUEDA CONTEXTUAL DE REACONDICIONADOS
+    // Búsqueda contextual de reacondicionados
     const ids = normales.map((n) => n.id_producto);
     const queryReac = `
-        SELECT
-          lr.id_lote         AS id_producto_reacondicionado,
-          lr.id_producto,
-          lr.cantidad        AS stock_local,
-          lr.precio_venta_reac AS precio_venta,
-          p.sku,
-          p.nombre,
-          'Pieza de Segunda Mano (Garantía)' AS marca_repuesto
-        FROM lote_reacondicionado lr
-        JOIN producto p ON lr.id_producto = p.id_producto
-        WHERE lr.id_sucursal = $1
-          AND lr.cantidad > 0
-          AND lr.id_producto = ANY($2::int[])
-      `;
+      SELECT
+        lr.id_lote         AS id_producto_reacondicionado,
+        lr.id_producto,
+        lr.cantidad        AS stock_local,
+        lr.precio_venta_reac AS precio_venta,
+        p.sku, p.nombre,
+        'Pieza de Segunda Mano (Garantía)' AS marca_repuesto
+      FROM lote_reacondicionado lr
+      JOIN producto p ON lr.id_producto = p.id_producto
+      WHERE lr.id_sucursal = $1
+        AND lr.cantidad > 0
+        AND lr.id_producto = ANY($2::int[])
+    `;
     const resReac = await this.pool.query(queryReac, [id_sucursal, ids]);
 
     const reacondicionados = resReac.rows.map((r) => ({
@@ -231,12 +284,12 @@ export class InventarioService {
 
   async obtenerCompatibilidadesProducto(id_producto: number) {
     const query = `
-      SELECT 
-          cp.es_universal, cp.anio_desde, cp.anio_hasta, cp.notas,
-          mv.nombre as marca_vehiculo, mod.nombre as modelo_vehiculo
+      SELECT
+        cp.es_universal, cp.anio_desde, cp.anio_hasta, cp.notas,
+        mv.nombre AS marca_vehiculo, mod.nombre AS modelo_vehiculo
       FROM compatibilidad_producto cp
       LEFT JOIN modelo_vehiculo mod ON cp.id_modelo = mod.id_modelo
-      LEFT JOIN marca_vehiculo mv ON mod.id_marca_vehiculo = mv.id_marca_vehiculo
+      LEFT JOIN marca_vehiculo mv  ON mod.id_marca_vehiculo = mv.id_marca_vehiculo
       WHERE cp.id_producto = $1
       ORDER BY mv.nombre ASC, mod.nombre ASC;
     `;
