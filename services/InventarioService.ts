@@ -113,7 +113,7 @@ export class InventarioService {
              p.sku, p.nombre, 'Pieza de Segunda Mano (Garantía)' as marca_repuesto
       FROM lote_reacondicionado lr
       JOIN producto p ON lr.id_producto = p.id_producto
-      WHERE lr.id_sucursal = $1 AND lr.estado = 'disponible' AND lr.cantidad > 0
+      WHERE lr.id_sucursal = $1 AND lr.activo = true AND lr.cantidad > 0
         AND lr.id_producto = ANY($2::int[])
     `;
     const resReac = await this.pool.query(queryReac, [idSucursalLocal, ids]);
@@ -123,10 +123,9 @@ export class InventarioService {
       precio_venta: Number(r.precio_venta),
       stock_local: Number(r.stock_local),
       is_reacondicionado: true,
-      stock_otras_sucursales: [], // Los reacondicionados no se buscan en otras sucursales en esta vista
+      stock_otras_sucursales: [],
     }));
 
-    // Retornamos ambos arreglos combinados
     return [...normales, ...reacondicionados];
   }
 
