@@ -52,8 +52,6 @@ export class GarantiaController {
     }
   };
 
-  // --- GETTERS PARA LAS PESTAÑAS ---
-
   obtenerPendientes = async (req: Request, res: Response): Promise<void> => {
     try {
       const data = await this.garantiaService.obtenerPendientes(
@@ -81,20 +79,20 @@ export class GarantiaController {
 
   inspeccionarRetorno = async (req: Request, res: Response): Promise<void> => {
     try {
-      const { id_retorno, resultado, observaciones, destino } = req.body;
+      const { id_garantia, resultado, observaciones, destino } = req.body;
       const id_tecnico = req.usuario?.id_empleado;
 
       if (!id_tecnico) throw new Error("Usuario no autenticado");
-      if (!id_retorno || !resultado || !destino)
+      if (!id_garantia || !resultado || !destino)
         throw new Error("Faltan campos obligatorios");
 
-      const id_inspeccion = await this.garantiaService.inspeccionarRetorno(
-        id_retorno,
+      const id_inspeccion = await this.garantiaService.inspeccionarRetorno({
+        id_garantia,
         id_tecnico,
         resultado,
-        observaciones || "",
+        observaciones,
         destino,
-      );
+      });
       res.status(200).json({
         success: true,
         message: "Inspección técnica registrada",
