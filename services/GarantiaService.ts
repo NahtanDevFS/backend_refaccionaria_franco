@@ -107,17 +107,29 @@ export class GarantiaService {
       );
 
       if (data.aprobado) {
-        const invRes = await client.query(
-          `SELECT id_inventario, cantidad_actual
-           FROM inventario_sucursal
-           WHERE id_producto = $1 AND id_sucursal = $2
-           FOR UPDATE`,
+        // ── Validar stock real desde lote_detalle ──────────────────────────
+        // MIGRACIÓN: reemplaza SELECT FROM inventario_sucursal FOR UPDATE
+        const stockRes = await client.query(
+          `SELECT
+             ps.id_producto_sucursal,
+             COALESCE(SUM(ld.cantidad_actual), 0) AS cantidad_actual
+           FROM producto_sucursal ps
+           LEFT JOIN lote_detalle ld
+             ON ld.id_producto = ps.id_producto
+            AND ld.id_sucursal = ps.id_sucursal
+            AND ld.agotado = FALSE
+            AND ld.activo  = TRUE
+           WHERE ps.id_producto = $1
+             AND ps.id_sucursal = $2
+             AND ps.activo = TRUE
+           GROUP BY ps.id_producto_sucursal
+           FOR UPDATE OF ps`,
           [garantia.id_producto, garantia.id_sucursal],
         );
 
         if (
-          invRes.rows.length === 0 ||
-          Number(invRes.rows[0].cantidad_actual) < garantia.cantidad
+          stockRes.rows.length === 0 ||
+          Number(stockRes.rows[0].cantidad_actual) < garantia.cantidad
         ) {
           throw new Error(
             "Sin stock disponible para este repuesto en la sucursal. " +
@@ -125,26 +137,22 @@ export class GarantiaService {
           );
         }
 
-        const id_inventario = invRes.rows[0].id_inventario;
+        const id_producto_sucursal = stockRes.rows[0].id_producto_sucursal;
         const nueva_cantidad =
-          Number(invRes.rows[0].cantidad_actual) - Number(garantia.cantidad);
+          Number(stockRes.rows[0].cantidad_actual) - Number(garantia.cantidad);
 
-        await client.query(
-          `UPDATE inventario_sucursal
-           SET cantidad_actual = $1
-           WHERE id_inventario = $2`,
-          [nueva_cantidad, id_inventario],
-        );
+        // MIGRACIÓN: se elimina UPDATE inventario_sucursal SET cantidad_actual
+        // El stock se descuenta directamente en lote_detalle vía fn_consumir_lotes_fifo
 
         const movRes = await client.query(
           `INSERT INTO movimiento_inventario
-             (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante,
+             (id_producto_sucursal, id_usuario, tipo, cantidad, cantidad_resultante,
               id_referencia, tabla_referencia, motivo)
            VALUES ($1, $2, 'salida_garantia', $3, $4, $5, 'garantia',
                    'Reemplazo físico por garantía aprobada')
            RETURNING id_movimiento`,
           [
-            id_inventario,
+            id_producto_sucursal,
             data.id_supervisor,
             garantia.cantidad,
             nueva_cantidad,
@@ -177,15 +185,21 @@ export class GarantiaService {
              p.nombre as producto, p.sku, p.garantia_dias,
              v.id_venta, v.created_at as fecha_compra,
              COALESCE(c.nombre_razon_social, 'Consumidor Final') as cliente,
-             COALESCE(inv.cantidad_actual, 0) as stock_disponible
+             -- MIGRACIÓN: stock_disponible calculado desde lote_detalle
+             -- reemplaza: COALESCE(inv.cantidad_actual, 0)
+             COALESCE((
+               SELECT SUM(ld.cantidad_actual)
+               FROM lote_detalle ld
+               WHERE ld.id_producto = dv.id_producto
+                 AND ld.id_sucursal = v.id_sucursal
+                 AND ld.agotado = FALSE
+                 AND ld.activo  = TRUE
+             ), 0) AS stock_disponible
       FROM garantia g
       JOIN detalle_venta dv ON g.id_detalle_venta = dv.id_detalle
       JOIN venta v          ON dv.id_venta        = v.id_venta
       JOIN producto p       ON dv.id_producto     = p.id_producto
       LEFT JOIN cliente c   ON v.id_cliente       = c.id_cliente
-      LEFT JOIN inventario_sucursal inv
-             ON inv.id_producto = dv.id_producto
-            AND inv.id_sucursal = v.id_sucursal
       WHERE v.id_sucursal = $1 AND g.estado = 'en_revision'
       ORDER BY g.fecha_solicitud ASC
     `;
@@ -224,7 +238,6 @@ export class GarantiaService {
     try {
       await client.query("BEGIN");
 
-      // Verificar que la garantía existe, está aprobada y no tiene inspección previa
       const garRes = await client.query(
         `SELECT g.id_garantia FROM garantia g
          WHERE g.id_garantia = $1 AND g.estado = 'aprobada'`,

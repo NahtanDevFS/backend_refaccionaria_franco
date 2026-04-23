@@ -3,9 +3,9 @@ import { Pool } from "pg";
 
 export interface AnularVentaDTO {
   id_venta: number;
-  id_usuario: number; // empleado que ejecuta la anulación (supervisor/admin)
-  motivo_anulacion: string; // obligatorio
-  monto_devolucion?: number; // opcional, default 0
+  id_usuario: number;
+  motivo_anulacion: string;
+  monto_devolucion?: number;
 }
 
 export class AnulacionService {
@@ -60,9 +60,6 @@ export class AnulacionService {
       );
 
       // ── 3. Anular pagos activos asociados ──────────────────────────────────
-      // Usa la columna "activo" existente en la tabla pago.
-      // Las queries de caja/arqueo ya filtran por activo = true,
-      // por lo que estos pagos dejan de contabilizarse automáticamente.
       await client.query(
         `UPDATE pago
          SET activo     = false,
@@ -73,9 +70,6 @@ export class AnulacionService {
       );
 
       // ── 4. Cancelar pedido de domicilio si está pendiente ──────────────────
-      // Solo se cancela si el repartidor aún no ha salido o está en ruta.
-      // Si ya fue entregado (estado 'entregado'), se deja como histórico.
-      // Si ya estaba 'fallido', tampoco se toca.
       await client.query(
         `UPDATE pedido_domicilio
          SET estado     = 'cancelado',
@@ -86,50 +80,53 @@ export class AnulacionService {
       );
 
       // ── 5. Reintegrar stock por cada detalle de la venta ──────────────────
-      // Solo productos normales (id_producto_reacondicionado IS NULL).
-      // Los reacondicionados tienen su propio flujo de lotes.
+      // MIGRACIÓN: reemplaza JOIN inventario_sucursal con JOIN producto_sucursal.
+      // Ya no se lee ni actualiza cantidad_actual en ninguna tabla agregada.
       const detallesRes = await client.query(
         `SELECT
            dv.id_detalle,
            dv.id_producto,
            dv.cantidad,
            dv.id_producto_reacondicionado,
-           i.id_inventario,
-           i.cantidad_actual
+           ps.id_producto_sucursal
          FROM detalle_venta dv
-         JOIN inventario_sucursal i
-           ON dv.id_producto = i.id_producto
-          AND i.id_sucursal  = $1
-         WHERE dv.id_venta   = $2
-           AND dv.activo     = true
-         FOR UPDATE OF i`,
+         JOIN producto_sucursal ps
+           ON dv.id_producto  = ps.id_producto
+          AND ps.id_sucursal  = $1
+          AND ps.activo       = TRUE
+         WHERE dv.id_venta = $2
+           AND dv.activo   = true
+         FOR UPDATE OF ps`,
         [venta.id_sucursal, data.id_venta],
       );
 
       for (const det of detallesRes.rows) {
         const cantidadDevuelta = Number(det.cantidad);
-        const cantidadAnterior = Number(det.cantidad_actual);
-        const cantidadResultante = cantidadAnterior + cantidadDevuelta;
+        const id_producto_sucursal = det.id_producto_sucursal;
 
-        // 5a. Actualizar inventario_sucursal
-        await client.query(
-          `UPDATE inventario_sucursal
-           SET cantidad_actual = $1,
-               updated_at     = NOW()
-           WHERE id_inventario = $2`,
-          [cantidadResultante, det.id_inventario],
+        // 5a. Stock actual desde lote_detalle (antes del reintegro)
+        const stockRes = await client.query(
+          `SELECT COALESCE(SUM(cantidad_actual), 0) AS stock
+           FROM lote_detalle
+           WHERE id_producto = $1
+             AND id_sucursal = $2
+             AND agotado = FALSE
+             AND activo  = TRUE`,
+          [det.id_producto, venta.id_sucursal],
         );
+        const cantidadResultante =
+          Number(stockRes.rows[0].stock) + cantidadDevuelta;
 
         // 5b. Registrar movimiento de inventario para trazabilidad
         const movRes = await client.query(
           `INSERT INTO movimiento_inventario
-             (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante,
+             (id_producto_sucursal, id_usuario, tipo, cantidad, cantidad_resultante,
               id_referencia, tabla_referencia, motivo)
            VALUES ($1, $2, 'ajuste_positivo', $3, $4, $5, 'venta',
                    'Reintegro por anulación de venta')
            RETURNING id_movimiento`,
           [
-            det.id_inventario,
+            id_producto_sucursal,
             data.id_usuario,
             cantidadDevuelta,
             cantidadResultante,
@@ -139,39 +136,35 @@ export class AnulacionService {
 
         // 5c. Solo para productos normales (no reacondicionados):
         //     crear un lote de reingreso con el costo del proveedor principal.
-        //     Los lotes originales ya fueron consumidos (FIFO) al crear la venta,
-        //     así que la mercadería re-entra como un lote nuevo.
         if (!det.id_producto_reacondicionado) {
           const costoRes = await client.query(
             `SELECT COALESCE(
-       (SELECT precio_costo
-        FROM   producto_proveedor
-        WHERE  id_producto  = $1
-          AND  es_principal = TRUE
-          AND  activo       = TRUE
-        LIMIT 1),
-       0.00
-     ) AS costo_unitario`,
+               (SELECT precio_costo
+                FROM   producto_proveedor
+                WHERE  id_producto  = $1
+                  AND  es_principal = TRUE
+                  AND  activo       = TRUE
+                LIMIT 1),
+               0.00
+             ) AS costo_unitario`,
             [det.id_producto],
           );
 
           const costoUnitario = Number(costoRes.rows[0].costo_unitario);
 
-          // Crear cabecera del lote (sin orden de compra — es un reingreso)
           const loteRes = await client.query(
             `INSERT INTO lote_inventario
-       (id_orden_compra, es_apertura)
-     VALUES (NULL, false)
-     RETURNING id_lote`,
+               (id_orden_compra, es_apertura)
+             VALUES (NULL, false)
+             RETURNING id_lote`,
           );
           const id_lote = loteRes.rows[0].id_lote;
 
-          // Crear el detalle del lote con producto, sucursal y cantidades
           await client.query(
             `INSERT INTO lote_detalle
-       (id_lote, id_producto, id_sucursal, costo_unitario,
-        cantidad_inicial, cantidad_actual)
-     VALUES ($1, $2, $3, $4, $5, $5)`,
+               (id_lote, id_producto, id_sucursal, costo_unitario,
+                cantidad_inicial, cantidad_actual)
+             VALUES ($1, $2, $3, $4, $5, $5)`,
             [
               id_lote,
               det.id_producto,
@@ -194,7 +187,6 @@ export class AnulacionService {
   }
 
   // ── Obtener datos enriquecidos de una venta para el detalle en frontend ────
-  // Retorna los nuevos campos de anulación junto con los datos existentes.
   async obtenerDatosAnulacion(id_venta: number) {
     const res = await this.pool.query(
       `SELECT

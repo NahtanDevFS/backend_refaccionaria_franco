@@ -6,19 +6,22 @@ export class BodegaService {
   constructor(private readonly pool: Pool) {}
 
   // ── Inventario local con costo promedio ponderado ─────────────────────────
-  // Cambio: el LATERAL de costo promedio ahora consulta lote_detalle
-  // en lugar de lote_inventario.
+  // MIGRACIÓN: cantidad_actual se calcula desde lote_detalle (SUM).
+  // producto_sucursal reemplaza a inventario_sucursal — ya no tiene cantidad_actual.
   async obtenerInventarioLocal(id_sucursal: number, filtros?: any) {
     let query = `
-      SELECT 
-        i.id_inventario, i.id_producto, p.sku, p.nombre,
-        i.cantidad_actual, i.punto_reorden,
+      SELECT
+        ps.id_producto_sucursal,
+        ps.id_producto,
+        p.sku,
+        p.nombre,
+        ps.punto_reorden,
         c.nombre  AS categoria,
         m.nombre  AS marca_repuesto,
         p.precio_venta,
+        -- ── Stock real: suma de lotes activos ─────────────────────────────
+        COALESCE(lotes_costo.cantidad_actual, 0)        AS cantidad_actual,
         -- ── Costo promedio ponderado de lotes activos ──────────────────────
-        -- Refleja el costo real del stock disponible hoy. Si no hay lotes
-        -- activos (producto sin stock), cae al costo del proveedor principal.
         COALESCE(
           lotes_costo.costo_promedio_ponderado,
           pp_costo.precio_costo,
@@ -26,29 +29,44 @@ export class BodegaService {
         ) AS costo,
         -- ── Cantidad de lotes activos (para el indicador expandible en UI) ─
         COALESCE(lotes_costo.total_lotes, 0) AS total_lotes,
-        (i.cantidad_actual <= i.punto_reorden) AS requiere_reorden,
-        (SELECT COALESCE(SUM(i2.cantidad_actual), 0)
-         FROM inventario_sucursal i2
-         WHERE i2.id_producto = p.id_producto AND i2.id_sucursal != $1) AS stock_otras_sucursales,
-        (SELECT COALESCE(json_agg(json_build_object('sucursal', s.nombre, 'cantidad', i2.cantidad_actual)), '[]'::json)
-         FROM inventario_sucursal i2
-         JOIN sucursal s ON i2.id_sucursal = s.id_sucursal
-         WHERE i2.id_producto = p.id_producto AND i2.id_sucursal != $1 AND i2.cantidad_actual > 0) AS detalle_otras_sucursales,
+        -- ── Requiere reorden: stock real vs punto_reorden ──────────────────
+        (COALESCE(lotes_costo.cantidad_actual, 0) <= ps.punto_reorden) AS requiere_reorden,
+        -- ── Stock en otras sucursales (desde lote_detalle) ─────────────────
+        (SELECT COALESCE(SUM(ld2.cantidad_actual), 0)
+         FROM lote_detalle ld2
+         WHERE ld2.id_producto = p.id_producto
+           AND ld2.id_sucursal != $1
+           AND ld2.agotado = FALSE
+           AND ld2.activo  = TRUE
+        ) AS stock_otras_sucursales,
+        (SELECT COALESCE(json_agg(json_build_object('sucursal', s2.nombre, 'cantidad', suc_stock.cantidad)), '[]'::json)
+         FROM (
+           SELECT ld2.id_sucursal, SUM(ld2.cantidad_actual) AS cantidad
+           FROM lote_detalle ld2
+           WHERE ld2.id_producto = p.id_producto
+             AND ld2.id_sucursal != $1
+             AND ld2.agotado = FALSE
+             AND ld2.activo  = TRUE
+           GROUP BY ld2.id_sucursal
+           HAVING SUM(ld2.cantidad_actual) > 0
+         ) suc_stock
+         JOIN sucursal s2 ON suc_stock.id_sucursal = s2.id_sucursal
+        ) AS detalle_otras_sucursales,
         (SELECT COALESCE(json_agg(json_build_object(
-            'marca', mv.nombre, 
-            'modelo', mod.nombre, 
-            'anio_desde', cp.anio_desde, 
-            'anio_hasta', cp.anio_hasta, 
+            'marca', mv.nombre,
+            'modelo', mod.nombre,
+            'anio_desde', cp.anio_desde,
+            'anio_hasta', cp.anio_hasta,
             'es_universal', cp.es_universal
           )), '[]'::json)
          FROM compatibilidad_producto cp
          LEFT JOIN modelo_vehiculo mod ON cp.id_modelo = mod.id_modelo
-         LEFT JOIN marca_vehiculo mv ON mod.id_marca_vehiculo = mv.id_marca_vehiculo
+         LEFT JOIN marca_vehiculo mv  ON mod.id_marca_vehiculo = mv.id_marca_vehiculo
          WHERE cp.id_producto = p.id_producto) AS compatibilidades
-      FROM inventario_sucursal i
-      JOIN producto p ON i.id_producto = p.id_producto
+      FROM producto_sucursal ps
+      JOIN producto p ON ps.id_producto = p.id_producto
       LEFT JOIN categoria_producto c ON p.id_categoria = c.id_categoria
-      LEFT JOIN marca m ON p.id_marca = m.id_marca
+      LEFT JOIN marca              m ON p.id_marca     = m.id_marca
       -- Costo del proveedor principal (fallback cuando no hay lotes activos)
       LEFT JOIN LATERAL (
         SELECT precio_costo
@@ -58,24 +76,23 @@ export class BodegaService {
           AND activo = TRUE
         LIMIT 1
       ) pp_costo ON true
-      -- Costo promedio ponderado y conteo de lotes activos
-      -- Ahora lee lote_detalle, que es la distribución física real por sucursal
+      -- Stock real + costo promedio ponderado + conteo de lotes activos
       LEFT JOIN LATERAL (
         SELECT
+          SUM(ld.cantidad_actual) AS cantidad_actual,
           ROUND(
             SUM(ld.cantidad_actual * ld.costo_unitario) / NULLIF(SUM(ld.cantidad_actual), 0),
             2
           ) AS costo_promedio_ponderado,
           COUNT(DISTINCT ld.id_lote) AS total_lotes
-          -- Contar lotes distintos (id_lote), no filas de lote_detalle.
-          -- Un traslado genera múltiples filas del mismo id_lote.
         FROM lote_detalle ld
         WHERE ld.id_producto = p.id_producto
-          AND ld.id_sucursal = i.id_sucursal
+          AND ld.id_sucursal = ps.id_sucursal
           AND ld.agotado     = FALSE
           AND ld.activo      = TRUE
       ) lotes_costo ON true
-      WHERE i.id_sucursal = $1
+      WHERE ps.id_sucursal = $1
+        AND ps.activo = TRUE
     `;
 
     const params: any[] = [id_sucursal];
@@ -101,7 +118,7 @@ export class BodegaService {
 
     if (filtros?.id_modelo_vehiculo) {
       query += ` AND EXISTS (
-        SELECT 1 FROM compatibilidad_producto cp 
+        SELECT 1 FROM compatibilidad_producto cp
         WHERE cp.id_producto = p.id_producto AND (cp.es_universal = true OR cp.id_modelo = $${paramIndex})
       )`;
       params.push(filtros.id_modelo_vehiculo);
@@ -124,10 +141,7 @@ export class BodegaService {
   }
 
   // ── Lotes activos de un producto en una sucursal ───────────────────────────
-  // Agrupa por id_lote (la compra): si el mismo lote tiene varias filas en
-  // lote_detalle para esta sucursal (p.ej. traslados parciales acumulados),
-  // se suman sus cantidades y se devuelve una sola fila por lote.
-  // El frontend muestra así "Lote #X — N uds" sin duplicar filas del mismo lote.
+  // Sin cambios: ya consultaba lote_detalle directamente.
   async obtenerLotesDeProducto(id_producto: number, id_sucursal: number) {
     const query = `
       SELECT
@@ -166,8 +180,8 @@ export class BodegaService {
   }
 
   // ── Emitir despacho de traslado ────────────────────────────────────────────
-  // Sin cambios: fn_consumir_lotes_fifo ya fue actualizado en la migración
-  // para operar sobre lote_detalle. Este método no necesita modificarse.
+  // MIGRACIÓN: validación de stock y movimiento usan producto_sucursal +
+  // lote_detalle. Se elimina UPDATE inventario_sucursal SET cantidad_actual.
   async emitirDespacho(
     id_sucursal_origen: number,
     id_usuario: number,
@@ -192,29 +206,40 @@ export class BodegaService {
       const id_despacho = resNota.rows[0].id_despacho;
 
       for (const det of data.detalles) {
-        const invRes = await client.query(
-          `SELECT id_inventario, cantidad_actual FROM inventario_sucursal 
-           WHERE id_producto = $1 AND id_sucursal = $2 FOR UPDATE`,
+        // MIGRACIÓN: reemplaza SELECT FROM inventario_sucursal FOR UPDATE
+        const stockRes = await client.query(
+          `SELECT
+             ps.id_producto_sucursal,
+             COALESCE(SUM(ld.cantidad_actual), 0) AS cantidad_actual
+           FROM producto_sucursal ps
+           LEFT JOIN lote_detalle ld
+             ON ld.id_producto = ps.id_producto
+            AND ld.id_sucursal = ps.id_sucursal
+            AND ld.agotado = FALSE
+            AND ld.activo  = TRUE
+           WHERE ps.id_producto = $1
+             AND ps.id_sucursal = $2
+             AND ps.activo      = TRUE
+           GROUP BY ps.id_producto_sucursal
+           FOR UPDATE OF ps`,
           [det.id_producto, id_sucursal_origen],
         );
 
         if (
-          invRes.rows.length === 0 ||
-          Number(invRes.rows[0].cantidad_actual) < det.cantidad
+          stockRes.rows.length === 0 ||
+          Number(stockRes.rows[0].cantidad_actual) < det.cantidad
         ) {
           throw new Error(
             `Stock insuficiente para el producto ID: ${det.id_producto}`,
           );
         }
 
-        const id_inventario = invRes.rows[0].id_inventario;
+        const id_producto_sucursal = stockRes.rows[0].id_producto_sucursal;
         const nueva_cantidad =
-          Number(invRes.rows[0].cantidad_actual) - det.cantidad;
+          Number(stockRes.rows[0].cantidad_actual) - det.cantidad;
 
-        await client.query(
-          `UPDATE inventario_sucursal SET cantidad_actual = $1 WHERE id_inventario = $2`,
-          [nueva_cantidad, id_inventario],
-        );
+        // MIGRACIÓN: se elimina UPDATE inventario_sucursal SET cantidad_actual
+        // El stock se descuenta en lote_detalle vía fn_consumir_lotes_fifo
 
         await client.query(
           `INSERT INTO detalle_despacho (id_despacho, id_producto, cantidad) VALUES ($1, $2, $3)`,
@@ -223,13 +248,13 @@ export class BodegaService {
 
         const movRes = await client.query(
           `INSERT INTO movimiento_inventario
-             (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante,
+             (id_producto_sucursal, id_usuario, tipo, cantidad, cantidad_resultante,
               id_referencia, tabla_referencia, motivo)
            VALUES ($1, $2, 'salida_traslado', $3, $4, $5, 'nota_despacho',
                    'Envío de mercadería a otra sucursal')
            RETURNING id_movimiento`,
           [
-            id_inventario,
+            id_producto_sucursal,
             id_usuario,
             det.cantidad,
             nueva_cantidad,
@@ -237,7 +262,6 @@ export class BodegaService {
           ],
         );
 
-        // fn_consumir_lotes_fifo ya opera sobre lote_detalle tras la migración
         await client.query(`SELECT fn_consumir_lotes_fifo($1, $2, $3, $4)`, [
           det.id_producto,
           id_sucursal_origen,
@@ -258,7 +282,7 @@ export class BodegaService {
 
   async obtenerRecepciones(id_sucursal_destino: number) {
     const query = `
-      SELECT 
+      SELECT
         nd.id_despacho, nd.fecha_emision, s.nombre AS origen,
         (SELECT json_agg(json_build_object('producto', p.nombre, 'sku', p.sku, 'cantidad', dd.cantidad))
          FROM detalle_despacho dd JOIN producto p ON dd.id_producto = p.id_producto
@@ -273,10 +297,10 @@ export class BodegaService {
   }
 
   // ── Confirmar recepción de traslado ────────────────────────────────────────
-  // Cambio principal: al recibir mercadería ya no se crea un lote_inventario
-  // nuevo. En cambio se busca el lote_detalle origen que fue consumido por
-  // el despacho y se crea un nuevo lote_detalle en la sucursal destino,
-  // heredando el id_lote (y por ende el id_orden_compra) del origen.
+  // MIGRACIÓN: se elimina el INSERT/UPDATE sobre inventario_sucursal.
+  // El movimiento de entrada usa id_producto_sucursal (ON CONFLICT para crearlo
+  // si el producto no existía aún en la sucursal destino).
+  // La lógica de trazabilidad de lotes (caso normal + legacy + fallback) se conserva íntegra.
   async confirmarRecepcion(
     id_despacho: number,
     id_sucursal_destino: number,
@@ -314,28 +338,41 @@ export class BodegaService {
       for (const det of detallesRes.rows) {
         const cantidadRecibida = Number(det.cantidad);
 
-        // ── Actualizar inventario_sucursal destino ─────────────────────────
-        const invRes = await client.query(
-          `INSERT INTO inventario_sucursal (id_producto, id_sucursal, cantidad_actual)
-           VALUES ($1, $2, $3)
-           ON CONFLICT (id_producto, id_sucursal)
-           DO UPDATE SET cantidad_actual = inventario_sucursal.cantidad_actual + EXCLUDED.cantidad_actual
-           RETURNING id_inventario, cantidad_actual`,
-          [det.id_producto, id_sucursal_destino, cantidadRecibida],
+        // ── Obtener o crear registro en producto_sucursal para el destino ──
+        // MIGRACIÓN: reemplaza INSERT/UPDATE inventario_sucursal cantidad_actual
+        const psRes = await client.query(
+          `INSERT INTO producto_sucursal (id_producto, id_sucursal)
+           VALUES ($1, $2)
+           ON CONFLICT (id_producto, id_sucursal) DO UPDATE
+             SET updated_at = NOW()
+           RETURNING id_producto_sucursal`,
+          [det.id_producto, id_sucursal_destino],
         );
 
-        const id_inventario = invRes.rows[0].id_inventario;
-        const nueva_cantidad = Number(invRes.rows[0].cantidad_actual);
+        const id_producto_sucursal = psRes.rows[0].id_producto_sucursal;
+
+        // Stock en destino antes de insertar el lote_detalle nuevo
+        const stockDestinoRes = await client.query(
+          `SELECT COALESCE(SUM(cantidad_actual), 0) AS stock
+           FROM lote_detalle
+           WHERE id_producto = $1
+             AND id_sucursal = $2
+             AND agotado = FALSE
+             AND activo  = TRUE`,
+          [det.id_producto, id_sucursal_destino],
+        );
+        const nueva_cantidad =
+          Number(stockDestinoRes.rows[0].stock) + cantidadRecibida;
 
         // ── Movimiento de entrada ──────────────────────────────────────────
         await client.query(
           `INSERT INTO movimiento_inventario
-             (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante,
+             (id_producto_sucursal, id_usuario, tipo, cantidad, cantidad_resultante,
               id_referencia, tabla_referencia, motivo)
            VALUES ($1, $2, 'entrada_traslado', $3, $4, $5, 'nota_despacho',
                    'Recepción de mercadería desde otra sucursal')`,
           [
-            id_inventario,
+            id_producto_sucursal,
             id_usuario,
             cantidadRecibida,
             nueva_cantidad,
@@ -344,9 +381,6 @@ export class BodegaService {
         );
 
         // ── Recuperar el id_lote del lote_detalle origen que fue consumido ─
-        // Buscamos en detalle_consumo_lote los lotes del despacho origen.
-        // Puede haber sido consumido de varios lote_detalle distintos (FIFO),
-        // por eso agrupamos por id_lote y sumamos las cantidades.
         const lotesOrigenRes = await client.query(
           `SELECT
              ld.id_lote,
@@ -367,9 +401,6 @@ export class BodegaService {
 
         if (lotesOrigenRes.rows.length > 0) {
           // ── Caso normal: hay trazabilidad del lote origen ────────────────
-          // Por cada id_lote que contribuyó al despacho, creamos un
-          // lote_detalle en destino heredando el mismo id_lote.
-          // Así las unidades siguen siendo del mismo lote/compra original.
           for (const loteOrigen of lotesOrigenRes.rows) {
             await client.query(
               `INSERT INTO lote_detalle
@@ -378,7 +409,7 @@ export class BodegaService {
                SELECT
                  $1, $2, $3, $4,
                  $5, $6, $6,
-                 li.fecha_ingreso   -- heredar fecha del lote original (respeta FIFO)
+                 li.fecha_ingreso
                FROM lote_inventario li
                WHERE li.id_lote = $1`,
               [
@@ -393,10 +424,6 @@ export class BodegaService {
           }
         } else {
           // ── Caso borde: lote de apertura histórica sin id_lote_detalle ───
-          // (consumos anteriores a la migración que solo tienen id_lote en
-          // detalle_consumo_lote). Intentamos recuperar el id_lote por
-          // id_lote directo; si tampoco existe, creamos un lote_inventario
-          // de apertura y su lote_detalle correspondiente.
           const lotesOrigenLegacyRes = await client.query(
             `SELECT
                dcl.id_lote,
@@ -439,9 +466,6 @@ export class BodegaService {
             }
           } else {
             // ── Último fallback: sin ninguna trazabilidad ─────────────────
-            // Crear lote_inventario de apertura + lote_detalle.
-            // Solo ocurre en casos extremos (datos muy corruptos o ajustes
-            // manuales sin movimiento registrado).
             const costoRes = await client.query(
               `SELECT COALESCE(
                  (SELECT costo_unitario
@@ -489,10 +513,8 @@ export class BodegaService {
   }
 
   // ── Ajuste de inventario ───────────────────────────────────────────────────
-  // Cambio: ajuste_positivo ahora inserta en lote_detalle en lugar de
-  // lote_inventario. Se crea un lote_inventario sin orden de compra
-  // (es_apertura=FALSE, porque es un ajuste manual intencional, no stock
-  // histórico) y su lote_detalle asociado.
+  // MIGRACIÓN: ya no se lee ni actualiza cantidad_actual desde producto_sucursal.
+  // El stock se calcula desde lote_detalle. El movimiento usa id_producto_sucursal.
   async ajustarInventario(
     id_sucursal: number,
     id_usuario: number,
@@ -502,16 +524,30 @@ export class BodegaService {
     try {
       await client.query("BEGIN");
 
-      const invRes = await client.query(
-        `SELECT id_inventario, cantidad_actual FROM inventario_sucursal
-         WHERE id_producto = $1 AND id_sucursal = $2 FOR UPDATE`,
+      // MIGRACIÓN: reemplaza SELECT FROM inventario_sucursal FOR UPDATE
+      const psRes = await client.query(
+        `SELECT
+           ps.id_producto_sucursal,
+           COALESCE(SUM(ld.cantidad_actual), 0) AS cantidad_actual
+         FROM producto_sucursal ps
+         LEFT JOIN lote_detalle ld
+           ON ld.id_producto = ps.id_producto
+          AND ld.id_sucursal = ps.id_sucursal
+          AND ld.agotado = FALSE
+          AND ld.activo  = TRUE
+         WHERE ps.id_producto = $1
+           AND ps.id_sucursal = $2
+           AND ps.activo = TRUE
+         GROUP BY ps.id_producto_sucursal
+         FOR UPDATE OF ps`,
         [data.id_producto, id_sucursal],
       );
-      if (invRes.rows.length === 0)
+
+      if (psRes.rows.length === 0)
         throw new Error("Producto no registrado en esta sucursal");
 
-      const id_inventario = invRes.rows[0].id_inventario;
-      const cantidad_actual = Number(invRes.rows[0].cantidad_actual);
+      const id_producto_sucursal = psRes.rows[0].id_producto_sucursal;
+      const cantidad_actual = Number(psRes.rows[0].cantidad_actual);
 
       let nueva_cantidad = cantidad_actual;
       if (data.tipo === "ajuste_positivo") nueva_cantidad += data.cantidad;
@@ -522,18 +558,15 @@ export class BodegaService {
           "El ajuste negativo dejaría el stock en números rojos.",
         );
 
-      await client.query(
-        `UPDATE inventario_sucursal SET cantidad_actual = $1 WHERE id_inventario = $2`,
-        [nueva_cantidad, id_inventario],
-      );
+      // MIGRACIÓN: se elimina UPDATE inventario_sucursal SET cantidad_actual
 
       const movRes = await client.query(
         `INSERT INTO movimiento_inventario
-           (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante, motivo)
+           (id_producto_sucursal, id_usuario, tipo, cantidad, cantidad_resultante, motivo)
          VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING id_movimiento`,
         [
-          id_inventario,
+          id_producto_sucursal,
           id_usuario,
           data.tipo,
           data.cantidad,
@@ -545,7 +578,6 @@ export class BodegaService {
       const id_movimiento = movRes.rows[0].id_movimiento;
 
       if (data.tipo === "ajuste_negativo") {
-        // fn_consumir_lotes_fifo ya opera sobre lote_detalle tras la migración
         await client.query(`SELECT fn_consumir_lotes_fifo($1, $2, $3, $4)`, [
           data.id_producto,
           id_sucursal,
@@ -564,8 +596,6 @@ export class BodegaService {
           [data.id_producto],
         );
 
-        // El lote representa el "evento de ajuste", no una compra real.
-        // es_apertura=FALSE: distingue ajustes intencionales del stock histórico.
         const nuevoLoteRes = await client.query(
           `INSERT INTO lote_inventario (es_apertura)
            VALUES (FALSE)

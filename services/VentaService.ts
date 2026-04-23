@@ -195,7 +195,7 @@ export class VentaService {
         id_producto_reacondicionado?: number;
         cantidad: number;
         precioUnitario: number;
-        id_inventario?: number;
+        id_producto_sucursal?: number; // MIGRACIÓN: antes id_inventario
         esReacondicionado: boolean;
       }[] = [];
 
@@ -227,19 +227,34 @@ export class VentaService {
             esReacondicionado: true,
           });
         } else {
-          const invRes = await client.query(
-            `SELECT i.id_inventario, i.cantidad_actual, p.precio_venta
-             FROM inventario_sucursal i
-             JOIN producto p ON i.id_producto = p.id_producto
-             WHERE i.id_producto = $1 AND i.id_sucursal = $2
-             FOR UPDATE`,
+          // MIGRACIÓN: reemplaza SELECT FROM inventario_sucursal FOR UPDATE
+          // El stock real viene de lote_detalle; el FOR UPDATE lo hacemos sobre
+          // producto_sucursal para garantizar la exclusión mutua de la transacción.
+          const stockRes = await client.query(
+            `SELECT
+               ps.id_producto_sucursal,
+               p.precio_venta,
+               COALESCE(SUM(ld.cantidad_actual), 0) AS cantidad_actual
+             FROM producto_sucursal ps
+             JOIN producto p ON ps.id_producto = p.id_producto
+             LEFT JOIN lote_detalle ld
+               ON ld.id_producto = ps.id_producto
+              AND ld.id_sucursal = ps.id_sucursal
+              AND ld.agotado = FALSE
+              AND ld.activo  = TRUE
+             WHERE ps.id_producto = $1
+               AND ps.id_sucursal = $2
+               AND ps.activo = TRUE
+             GROUP BY ps.id_producto_sucursal, p.precio_venta
+             FOR UPDATE OF ps`,
             [det.id_producto, data.id_sucursal],
           );
-          if (invRes.rows.length === 0)
+
+          if (stockRes.rows.length === 0)
             throw new Error(
               `Producto ${det.id_producto} sin inventario en esta sucursal`,
             );
-          if (Number(invRes.rows[0].cantidad_actual) < det.cantidad)
+          if (Number(stockRes.rows[0].cantidad_actual) < det.cantidad)
             throw new Error(
               `Stock insuficiente para producto ${det.id_producto}`,
             );
@@ -247,8 +262,8 @@ export class VentaService {
           detallesCalculados.push({
             id_producto: det.id_producto,
             cantidad: det.cantidad,
-            precioUnitario: Number(invRes.rows[0].precio_venta),
-            id_inventario: invRes.rows[0].id_inventario,
+            precioUnitario: Number(stockRes.rows[0].precio_venta),
+            id_producto_sucursal: stockRes.rows[0].id_producto_sucursal,
             esReacondicionado: false,
           });
         }
@@ -306,25 +321,31 @@ export class VentaService {
       for (const det of detallesCalculados) {
         if (det.esReacondicionado) continue;
 
-        const nuevaCantidad = await client.query(
-          `SELECT cantidad_actual FROM inventario_sucursal
-           WHERE id_inventario = $1`,
-          [det.id_inventario],
+        // MIGRACIÓN: stock resultante calculado desde lote_detalle
+        // ya no se lee cantidad_actual de inventario_sucursal
+        const stockRes = await client.query(
+          `SELECT COALESCE(SUM(cantidad_actual), 0) AS cantidad_actual
+           FROM lote_detalle
+           WHERE id_producto = $1
+             AND id_sucursal = $2
+             AND agotado = FALSE
+             AND activo  = TRUE`,
+          [det.id_producto, data.id_sucursal],
         );
 
-        const cantidadResultante = Number(
-          nuevaCantidad.rows[0].cantidad_actual,
-        );
+        // cantidad_resultante = stock antes de consumir - lo que se vende
+        const cantidadResultante =
+          Number(stockRes.rows[0].cantidad_actual) - det.cantidad;
 
         const movRes = await client.query(
           `INSERT INTO movimiento_inventario
-             (id_inventario, id_usuario, tipo, cantidad, cantidad_resultante,
+             (id_producto_sucursal, id_usuario, tipo, cantidad, cantidad_resultante,
               id_referencia, tabla_referencia, motivo)
            VALUES ($1, $2, 'salida_venta', $3, $4, $5, 'venta',
                    'Venta registrada en mostrador o domicilio')
            RETURNING id_movimiento`,
           [
-            det.id_inventario,
+            det.id_producto_sucursal,
             id_usuario,
             det.cantidad,
             cantidadResultante,
@@ -549,10 +570,10 @@ export class VentaService {
       client.release();
     }
   }
+
   async obtenerVentaPorId(
     id_venta: number,
   ): Promise<{ venta: any; detalles: any[] } | null> {
-    // Usa v.* pero el canal ahora viene del JOIN con canal_venta
     const queryVenta = `
       SELECT
         v.id_venta, v.id_sucursal, v.id_vendedor, v.id_cliente,
