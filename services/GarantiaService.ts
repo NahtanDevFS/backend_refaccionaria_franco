@@ -9,7 +9,7 @@ import {
 export class GarantiaService {
   constructor(private readonly pool: Pool) {}
 
-  // ── Crear solicitud de garantía ───────────────────────────────────────────
+  //Crear solicitud de garantía
   async crearGarantia(data: CrearGarantiaDTO): Promise<number> {
     const client = await this.pool.connect();
     try {
@@ -76,7 +76,7 @@ export class GarantiaService {
     }
   }
 
-  // ── Resolver garantía (aprobar o rechazar) ────────────────────────────────
+  //Resolver garantía (aprobar o rechazar)
   async resolverGarantia(data: ResolverGarantiaDTO): Promise<void> {
     const client = await this.pool.connect();
     try {
@@ -107,8 +107,7 @@ export class GarantiaService {
       );
 
       if (data.aprobado) {
-        // ── Validar stock real desde lote_detalle ──────────────────────────
-        // FOR UPDATE simple sin GROUP BY (no son compatibles en PostgreSQL)
+        //Validar stock real desde lote_detalle
         const psRes = await client.query(
           `SELECT ps.id_producto_sucursal
            FROM producto_sucursal ps
@@ -148,8 +147,7 @@ export class GarantiaService {
         const nueva_cantidad =
           Number(stockRes.rows[0].cantidad_actual) - Number(garantia.cantidad);
 
-        // MIGRACIÓN: se elimina UPDATE inventario_sucursal SET cantidad_actual
-        // El stock se descuenta directamente en lote_detalle vía fn_consumir_lotes_fifo
+        //El stock se descuenta directamente en lote_detalle vía fn_consumir_lotes_fifo
 
         const movRes = await client.query(
           `INSERT INTO movimiento_inventario
@@ -184,7 +182,7 @@ export class GarantiaService {
     }
   }
 
-  // ── GETTERS ───────────────────────────────────────────────────────────────
+  //Getters
 
   async obtenerPendientes(id_sucursal: number): Promise<any[]> {
     const query = `
@@ -218,7 +216,7 @@ export class GarantiaService {
     }));
   }
 
-  // Garantías aprobadas que aún no tienen inspección registrada
+  //Garantías aprobadas que aún no tienen inspección registrada
   async obtenerPendientesInspeccion(id_sucursal: number): Promise<any[]> {
     const query = `
       SELECT g.id_garantia, g.cantidad, g.fecha_solicitud,
@@ -239,7 +237,7 @@ export class GarantiaService {
     return res.rows.map((row) => ({ ...row, cantidad: Number(row.cantidad) }));
   }
 
-  // ── Inspección técnica ────────────────────────────────────────────────────
+  //Inspección técnica
   async inspeccionarRetorno(data: InspeccionarRetornoDTO): Promise<number> {
     const client = await this.pool.connect();
     try {
@@ -314,7 +312,7 @@ export class GarantiaService {
     }
   }
 
-  // ── Historial ─────────────────────────────────────────────────────────────
+  //Historial
   async obtenerHistorial(
     id_sucursal: number,
     search?: string,

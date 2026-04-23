@@ -15,7 +15,7 @@ export const crearVentaSchema = z
       .int()
       .positive("id_vendedor debe ser un entero positivo"),
 
-    // ── Datos del cliente ─────────────────────────────────────────────────────
+    //Datos del cliente
     nit: z
       .string()
       .min(1, "El NIT es obligatorio")
@@ -24,10 +24,10 @@ export const crearVentaSchema = z
     cliente_nuevo: z
       .object({
         nombre_razon_social: z.string(),
-        // tipo_cliente llega como string desde el frontend (ej. 'particular').
-        // El service lo resuelve a id_tipo_cliente internamente.
+        //tipo_cliente llega como string desde el frontend ('particular').
+        //El service lo resuelve a id_tipo_cliente internamente.
         tipo_cliente: z.string().optional().default("particular"),
-        // Estos campos pueden llegar como null desde el frontend
+        //Estos campos pueden llegar como null desde el frontend
         telefono: z.string().nullable().optional(),
         email: z
           .string()
@@ -42,7 +42,7 @@ export const crearVentaSchema = z
       .nullable()
       .optional(),
 
-    // ── Datos del canal y entrega ─────────────────────────────────────────────
+    //Datos del canal y entrega
     canal: z.enum(["mostrador", "domicilio"]),
     pago_contra_entrega: z.boolean().optional().default(false),
     descuento_porcentaje: z.number().min(0).max(100).optional().default(0),
@@ -52,7 +52,7 @@ export const crearVentaSchema = z
     telefono_contacto: z.string().nullable().optional(),
     id_municipio_entrega: z.number().nullable().optional(),
 
-    // ── Productos ─────────────────────────────────────────────────────────────
+    //Productos
     detalles: z
       .array(
         z.object({
@@ -65,7 +65,7 @@ export const crearVentaSchema = z
   })
   .refine(
     (data) => {
-      // Validación estricta: si es a domicilio, exige datos de entrega
+      //Validación estricta: si es a domicilio, exige datos de entrega
       if (data.canal === "domicilio") {
         return (
           !!data.direccion_entrega &&

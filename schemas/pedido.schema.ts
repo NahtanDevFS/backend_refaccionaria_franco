@@ -18,7 +18,7 @@ export const resultadoEntregaSchema = z
   })
   .refine(
     (data) => {
-      // Regla de validación estricta cruzada
+      //Regla de validación estricta cruzada
       if (
         data.estado === EstadoPedido.FALLIDO &&
         (!data.motivo_fallido || data.motivo_fallido.length < 5)

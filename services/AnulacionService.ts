@@ -16,7 +16,7 @@ export class AnulacionService {
     try {
       await client.query("BEGIN");
 
-      // ── 1. Obtener y bloquear la venta ──────────────────────────────────────
+      //Obtener y bloquear la venta
       const ventaRes = await client.query(
         `SELECT v.id_venta, v.id_sucursal, v.estado, v.total
         FROM venta v
@@ -42,7 +42,7 @@ export class AnulacionService {
       if (venta.estado === "anulada")
         throw new Error("Esta venta ya se encuentra anulada.");
 
-      // ── 2. Marcar la venta como anulada ────────────────────────────────────
+      //Marcar la venta como anulada
       await client.query(
         `UPDATE venta
          SET estado           = 'anulada',
@@ -59,7 +59,7 @@ export class AnulacionService {
         ],
       );
 
-      // ── 3. Anular pagos activos asociados ──────────────────────────────────
+      //Anular pagos activos asociados
       await client.query(
         `UPDATE pago
          SET activo     = false,
@@ -69,7 +69,7 @@ export class AnulacionService {
         [data.id_venta],
       );
 
-      // ── 4. Cancelar pedido de domicilio si está pendiente ──────────────────
+      //Cancelar pedido de domicilio si está pendiente
       await client.query(
         `UPDATE pedido_domicilio
          SET estado     = 'cancelado',
@@ -79,9 +79,9 @@ export class AnulacionService {
         [data.id_venta],
       );
 
-      // ── 5. Reintegrar stock por cada detalle de la venta ──────────────────
-      // MIGRACIÓN: reemplaza JOIN inventario_sucursal con JOIN producto_sucursal.
-      // Ya no se lee ni actualiza cantidad_actual en ninguna tabla agregada.
+      //Reintegrar stock por cada detalle de la venta
+      //reemplaza JOIN inventario_sucursal con JOIN producto_sucursal.
+      //Ya no se lee ni actualiza cantidad_actual en ninguna tabla agregada.
       const detallesRes = await client.query(
         `SELECT
            dv.id_detalle,
@@ -104,7 +104,7 @@ export class AnulacionService {
         const cantidadDevuelta = Number(det.cantidad);
         const id_producto_sucursal = det.id_producto_sucursal;
 
-        // 5a. Stock actual desde lote_detalle (antes del reintegro)
+        //Stock actual desde lote_detalle (antes del reintegro)
         const stockRes = await client.query(
           `SELECT COALESCE(SUM(cantidad_actual), 0) AS stock
            FROM lote_detalle
@@ -117,7 +117,7 @@ export class AnulacionService {
         const cantidadResultante =
           Number(stockRes.rows[0].stock) + cantidadDevuelta;
 
-        // 5b. Registrar movimiento de inventario para trazabilidad
+        //Registrar movimiento de inventario para trazabilidad
         const movRes = await client.query(
           `INSERT INTO movimiento_inventario
              (id_producto_sucursal, id_usuario, tipo, cantidad, cantidad_resultante,
@@ -134,8 +134,8 @@ export class AnulacionService {
           ],
         );
 
-        // 5c. Solo para productos normales (no reacondicionados):
-        //     crear un lote de reingreso con el costo del proveedor principal.
+        //Solo para productos normales (no reacondicionados):
+        //crear un lote de reingreso con el costo del proveedor principal.
         if (!det.id_producto_reacondicionado) {
           const costoRes = await client.query(
             `SELECT COALESCE(
@@ -186,7 +186,7 @@ export class AnulacionService {
     }
   }
 
-  // ── Obtener datos enriquecidos de una venta para el detalle en frontend ────
+  //Obtener datos enriquecidos de una venta para el detalle en frontend ────
   async obtenerDatosAnulacion(id_venta: number) {
     const res = await this.pool.query(
       `SELECT
@@ -215,7 +215,7 @@ export class AnulacionService {
     try {
       await client.query("BEGIN");
 
-      // 1. Verificar que existe el pedido fallido para esta venta
+      //Verificar que existe el pedido fallido para esta venta
       const pedidoRes = await client.query(
         `SELECT pd.id_pedido, v.id_sucursal, v.estado
          FROM pedido_domicilio pd
@@ -231,14 +231,14 @@ export class AnulacionService {
 
       const { id_pedido, id_sucursal, estado: estadoVenta } = pedidoRes.rows[0];
 
-      // 2. Verificar que la venta sigue en estado entregable
+      //Verificar que la venta sigue en estado entregable
       const estadosValidos = ["pagada", "pendiente_cobro_contra_entrega"];
       if (!estadosValidos.includes(estadoVenta))
         throw new Error(
           `La venta está en estado '${estadoVenta}' y no puede reagendarse.`,
         );
 
-      // 3. Verificar que el repartidor existe, pertenece a la sucursal y está activo
+      //Verificar que el repartidor existe, pertenece a la sucursal y está activo
       const repRes = await client.query(
         `SELECT e.id_empleado
          FROM empleado e
@@ -255,7 +255,7 @@ export class AnulacionService {
           "El repartidor seleccionado no existe o no pertenece a esta sucursal.",
         );
 
-      // 4. Resetear el pedido — como si fuera nuevo
+      //Resetear el pedido — como si fuera nuevo
       await client.query(
         `UPDATE pedido_domicilio
          SET estado         = 'pendiente',

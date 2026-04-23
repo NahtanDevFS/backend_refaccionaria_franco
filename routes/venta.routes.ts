@@ -24,13 +24,13 @@ export function crearVentaRouter(dbPool: Pool): Router {
   );
   router.post("/autorizaciones/resolver", ventaController.resolverAutorizacion);
 
-  // NUEVA ruta: historial completo de descuentos aplicados
+  //historial completo de descuentos aplicados
   router.get(
     "/descuentos/historial",
     ventaController.obtenerHistorialDescuentos,
   );
 
-  // Rutas dinámicas AL FINAL para no capturar las estáticas
+  //Rutas dinámicas al final para no capturar las estáticas
   router.get("/:id", ventaController.obtenerVentaPorId);
 
   return router;

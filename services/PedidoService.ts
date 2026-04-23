@@ -6,9 +6,7 @@ import { EstadoPedido } from "../types/pedido.types";
 export class PedidoService {
   constructor(private readonly pool: Pool) {}
 
-  // ── PUNTO 7: programarDespacho ya no inserta direccion_entrega,
-  //    nombre_contacto ni telefono_contacto directamente en pedido_domicilio.
-  //    Primero crea un registro en destinatario y luego lo referencia.
+  //Primero crea un registro en destinatario y luego lo referencia.
   async programarDespacho(dto: ProgramarPedidoDTO) {
     const resultVenta = await this.pool.query(
       "SELECT estado, id_cliente FROM venta WHERE id_venta = $1",
@@ -28,7 +26,7 @@ export class PedidoService {
     try {
       await client.query("BEGIN");
 
-      // Crear destinatario con los datos de entrega
+      //Crear destinatario con los datos de entrega
       const destRes = await client.query(
         `INSERT INTO destinatario (id_cliente, direccion_texto)
          VALUES ($1, $2)
@@ -37,7 +35,7 @@ export class PedidoService {
       );
       const id_destinatario = destRes.rows[0].id_destinatario;
 
-      // Insertar pedido referenciando el destinatario
+      //Insertar pedido referenciando el destinatario
       const result = await client.query(
         `INSERT INTO pedido_domicilio (id_venta, id_repartidor, id_destinatario, estado)
          VALUES ($1, $2, $3, 'pendiente') RETURNING *;`,

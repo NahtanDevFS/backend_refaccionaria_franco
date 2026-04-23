@@ -6,7 +6,7 @@ export const crearClienteSchema = z.object({
   nombre_razon_social: z
     .string()
     .min(3, "El nombre debe tener al menos 3 caracteres"),
-  // Si no envían NIT, la regla de negocio dicta que asuma 'CF'
+  //Si no envían NIT, la regla de negocio dicta que asuma 'CF'
   nit: z.string().optional().default("CF"),
   tipo_cliente: z
     .nativeEnum(TipoCliente, { message: "Tipo de cliente inválido" })

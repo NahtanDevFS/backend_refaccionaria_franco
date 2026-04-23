@@ -4,7 +4,7 @@ import { Pool } from "pg";
 import { AdminService } from "../services/AdminService";
 import { AdminController } from "../controllers/AdminController";
 
-// ─── Middleware: solo ADMINISTRADOR puede acceder ──────────────────────────
+//Middleware: solo administrador puede acceder
 function soloAdmin(req: Request, res: Response, next: NextFunction): void {
   if (req.usuario?.rol !== "ADMINISTRADOR") {
     res.status(403).json({

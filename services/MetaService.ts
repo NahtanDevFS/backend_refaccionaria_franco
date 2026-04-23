@@ -8,7 +8,7 @@ const ROL_GERENTE_REG = "GERENTE_REGIONAL";
 export class MetaService {
   constructor(private readonly pool: Pool) {}
 
-  // ── Asignar meta mensual ────────────────────────────────────────────────
+  //Asignar meta mensual
   async asignarMetaMensual(dto: AsignarMetaDTO) {
     const queryEmpleado = `
       SELECT e.id_empleado, p.nombre AS puesto
@@ -55,7 +55,7 @@ export class MetaService {
     return { ...meta, comision_base_pct: base, comision_excedente_pct: exc };
   }
 
-  // ── Helper: resolver o crear esquema de comisión ────────────────────────
+  //Helper: resolver o crear esquema de comisión
   private async _resolverEsquema(base: number, exc: number): Promise<number> {
     const buscar = await this.pool.query(
       `SELECT id_esquema FROM esquema_comision
@@ -73,8 +73,8 @@ export class MetaService {
     return crear.rows[0].id_esquema;
   }
 
-  // ── Helper central: construir filtro SQL de sucursal/región ─────────────
-  // Devuelve { clause, params } para insertar en cualquier query.
+  //Helper central: construir filtro SQL de sucursal/región
+  //Devuelve { clause, params } para insertar en cualquier query.
   // - ADMINISTRADOR sin filtro: ve todo → sin restricción
   // - ADMINISTRADOR con id_sucursal_query: filtra esa sucursal
   // - GERENTE_REGIONAL sin filtro: ve todas las sucursales de su región
@@ -94,13 +94,13 @@ export class MetaService {
         params.push(idSucursalQuery);
         return { clause: `AND e.id_sucursal = $${params.length}`, params };
       }
-      // Sin filtro: ve todo
+      //Sin filtro: ve todo
       return { clause: "", params };
     }
 
     if (rolUsuario === ROL_GERENTE_REG) {
       if (idSucursalQuery) {
-        // Filtra sucursal específica pero valida que pertenezca a su región
+        //Filtra sucursal específica pero valida que pertenezca a su región
         params.push(idSucursalQuery);
         params.push(idRegionToken);
         return {
@@ -114,12 +114,12 @@ export class MetaService {
       return { clause: `AND s.id_region = $${params.length}`, params };
     }
 
-    // Roles locales (SUPERVISOR, VENDEDOR, etc.): solo su sucursal
+    // Roles locales (SUPERVISOR, VENDEDOR, etc.) solo su sucursal
     params.push(idSucursalToken);
     return { clause: `AND e.id_sucursal = $${params.length}`, params };
   }
 
-  // ── Rendimiento mensual (mes actual) ────────────────────────────────────
+  //Rendimiento mensual (mes actual)
   async obtenerRendimientoMensual(
     rolUsuario: string,
     idSucursalToken: number | null,
@@ -174,7 +174,7 @@ export class MetaService {
     }));
   }
 
-  // ── Consolidado de la sucursal/región (mes actual) ───────────────────────
+  //Consolidado de la sucursal/región (mes actual)
   async obtenerConsolidadoSucursal(
     rolUsuario: string,
     idSucursalToken: number | null,
@@ -225,7 +225,7 @@ export class MetaService {
     };
   }
 
-  // ── Vendedores disponibles para asignar meta ────────────────────────────
+  //Vendedores disponibles para asignar meta
   async obtenerVendedoresParaAsignar(
     rolUsuario: string,
     idSucursalToken: number | null,
@@ -273,7 +273,7 @@ export class MetaService {
     }));
   }
 
-  // ── Sugerencia de meta para un vendedor ─────────────────────────────────
+  //Sugerencia de meta para un vendedor
   async obtenerSugerenciaMeta(id_empleado: number) {
     const hoy = new Date();
     let anioRef = hoy.getFullYear();
@@ -334,7 +334,7 @@ export class MetaService {
     };
   }
 
-  // ── Historial de metas de un empleado ───────────────────────────────────
+  //Historial de metas de un empleado
   async obtenerHistorialMetas(id_empleado: number) {
     const result = await this.pool.query(
       `SELECT
@@ -373,7 +373,7 @@ export class MetaService {
           ? Number(((monto_vendido / monto_meta) * 100).toFixed(2))
           : 0;
 
-      // Mes actual o futuro → en curso (independiente del % vendido)
+      //Mes actual o futuro es en curso (independiente del % vendido)
       const esFuturoOActual =
         anio > anioActual || (anio === anioActual && mes >= mesActual);
 
@@ -401,7 +401,7 @@ export class MetaService {
     });
   }
 
-  // ── Cálculo de rendimiento y comisión individual ─────────────────────────
+  //Cálculo de rendimiento y comisión individual
   async calcularRendimientoYComision(
     id_empleado: number,
     anio: number,
@@ -457,7 +457,7 @@ export class MetaService {
     };
   }
 
-  // ── Sucursales disponibles (para selector en frontend) ───────────────────
+  //Sucursales disponibles (para selector en frontend)
   async obtenerSucursales(rolUsuario: string, idRegionToken: number | null) {
     // GERENTE_REGIONAL: solo las sucursales de su región
     // ADMINISTRADOR: todas

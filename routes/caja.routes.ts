@@ -12,17 +12,17 @@ export function crearCajaRouter(dbPool: Pool): Router {
   const arqueoService = new ArqueoService(dbPool);
   const controller = new CajaController(cajaService, arqueoService);
 
-  // Cobros de mostrador
+  //Cobros de mostrador
   router.get("/pendientes", controller.obtenerPendientes);
   router.post("/cobrar", controller.cobrar);
   router.get("/resumen", controller.obtenerResumen);
   router.get("/historial", controller.obtenerHistorial);
 
-  // Liquidación de repartidores
+  //Liquidación de repartidores
   router.get("/repartidores/pendientes", controller.obtenerCobrosRepartidores);
   router.post("/repartidores/liquidar", controller.liquidarRepartidor);
 
-  // Arqueo — orden importa: rutas estáticas antes de dinámicas
+  //Arqueo — orden importa: rutas estáticas antes de dinámicas
   router.post("/arqueo", controller.registrarArqueo);
   router.get("/arqueos", controller.obtenerHistorialArqueos);
   router.get("/arqueos/cajeros", controller.obtenerCajeros);

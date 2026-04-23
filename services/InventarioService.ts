@@ -137,7 +137,7 @@ export class InventarioService {
 
     if (normales.length === 0) return normales;
 
-    // Búsqueda contextual de reacondicionados para los mismos productos
+    //Búsqueda contextual de reacondicionados para los mismos productos
     const ids = normales.map((n) => n.id_producto);
     const queryReac = `
       SELECT lr.id_lote AS id_producto_reacondicionado, lr.id_producto, lr.cantidad AS stock_local,
@@ -253,7 +253,7 @@ export class InventarioService {
 
     if (normales.length === 0) return normales;
 
-    // Búsqueda contextual de reacondicionados
+    //Búsqueda contextual de reacondicionados
     const ids = normales.map((n) => n.id_producto);
     const queryReac = `
       SELECT

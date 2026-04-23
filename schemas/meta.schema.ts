@@ -7,13 +7,13 @@ export const asignarMetaSchema = z
     anio: z.number().int().min(2020).max(2100),
     mes: z.number().int().min(1).max(12, "El mes debe ser entre 1 y 12"),
     monto_meta: z.number().positive("La meta debe ser mayor a 0"),
-    // Usamos los valores por defecto que tú definiste en la base de datos (2% y 4%)
+    //se usa los valores por defecto definidos en la base de datos (2% y 4%)
     comision_base_pct: z.number().min(0).max(100).optional().default(2.0),
     comision_excedente_pct: z.number().min(0).max(100).optional().default(4.0),
   })
   .refine(
     (data) => {
-      // Solo se permiten metas para el mes actual o futuros
+      //Solo se permiten metas para el mes actual o futuros
       const hoy = new Date();
       const anioActual = hoy.getFullYear();
       const mesActual = hoy.getMonth() + 1;

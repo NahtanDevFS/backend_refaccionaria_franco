@@ -5,7 +5,7 @@ import { CrearVentaDTO } from "../dtos/CrearVentaDTO";
 export class VentaService {
   constructor(private readonly pool: Pool) {}
 
-  // ── Helper: resuelve el id_canal a partir del nombre (mostrador/domicilio) ─
+  //Helper: resuelve el id_canal a partir del nombre (mostrador/domicilio)
   private async resolverIdCanal(
     client: { query: Function },
     nombreCanal: string,
@@ -23,8 +23,8 @@ export class VentaService {
     let baseQuery = `
       FROM venta v
       LEFT JOIN canal_venta  cv ON v.id_canal    = cv.id_canal
-      LEFT JOIN cliente       c ON v.id_cliente  = c.id_cliente
-      LEFT JOIN empleado      e ON v.id_vendedor = e.id_empleado
+      LEFT JOIN cliente    c ON v.id_cliente  = c.id_cliente
+      LEFT JOIN empleado   e ON v.id_vendedor = e.id_empleado
       LEFT JOIN pedido_domicilio pd ON pd.id_venta = v.id_venta
       WHERE 1=1
     `;
@@ -74,16 +74,16 @@ export class VentaService {
     let dataQuery =
       `SELECT
         v.id_venta,
-        v.created_at                                          AS fecha,
+        v.created_at  AS fecha,
         COALESCE(c.nombre_razon_social, 'Consumidor Final')   AS cliente,
-        CONCAT(e.nombre, ' ', e.apellido)                     AS vendedor,
-        cv.nombre                                             AS canal,
+        CONCAT(e.nombre, ' ', e.apellido)    AS vendedor,
+        cv.nombre             AS canal,
         v.subtotal,
-        v.descuento_monto                                     AS descuento,
+        v.descuento_monto  AS descuento,
         v.monto_iva,
         v.total,
         v.estado,
-        pd.estado                                             AS estado_pedido,
+        pd.estado AS estado_pedido,
         pd.motivo_fallido
       ` + baseQuery;
 
@@ -195,7 +195,7 @@ export class VentaService {
         id_producto_reacondicionado?: number;
         cantidad: number;
         precioUnitario: number;
-        id_producto_sucursal?: number; // MIGRACIÓN: antes id_inventario
+        id_producto_sucursal?: number;
         esReacondicionado: boolean;
       }[] = [];
 
@@ -206,7 +206,8 @@ export class VentaService {
              FROM lote_reacondicionado lr
              WHERE lr.id_lote = $1
                AND lr.id_sucursal = $2
-               AND lr.estado = 'disponible'
+               AND lr.activo = true
+               AND lr.cantidad > 0
              FOR UPDATE`,
             [det.id_producto_reacondicionado, data.id_sucursal],
           );
@@ -227,8 +228,7 @@ export class VentaService {
             esReacondicionado: true,
           });
         } else {
-          // MIGRACIÓN: FOR UPDATE sobre producto_sucursal (sin GROUP BY — no compatible)
-          // Primero bloqueamos la fila, luego calculamos el stock por separado.
+          //Primero bloquea la fila, luego calcula el stock por separado
           const psRes = await client.query(
             `SELECT ps.id_producto_sucursal, p.precio_venta
              FROM producto_sucursal ps
@@ -272,7 +272,7 @@ export class VentaService {
         }
       }
 
-      // ── Insertar venta ──────────────────────────────────────────────────────
+      //Insertar venta
       const ventaRes = await client.query(
         `INSERT INTO venta
            (id_sucursal, id_vendedor, id_cliente, id_canal, pago_contra_entrega,
@@ -292,7 +292,7 @@ export class VentaService {
 
       const id_venta = ventaRes.rows[0].id_venta;
 
-      // ── Insertar detalles (trigger recalcula subtotal/total de venta) ───────
+      //Insertar detalles (trigger recalcula subtotal/total de venta)
       for (const det of detallesCalculados) {
         await client.query(
           `INSERT INTO detalle_venta
@@ -309,7 +309,7 @@ export class VentaService {
         );
       }
 
-      // ── Aplicar descuento sobre el subtotal ya calculado por el trigger ─────
+      //Aplicar descuento sobre el subtotal ya calculado por el trigger
       if (pctDescuento > 0) {
         await client.query(
           `UPDATE venta
@@ -320,12 +320,10 @@ export class VentaService {
         );
       }
 
-      // ── FIFO: registrar movimiento y consumir lotes para productos normales ─
+      //FIFO: registrar movimiento y consumir lotes para productos normales
       for (const det of detallesCalculados) {
         if (det.esReacondicionado) continue;
 
-        // MIGRACIÓN: stock resultante calculado desde lote_detalle
-        // ya no se lee cantidad_actual de inventario_sucursal
         const stockRes = await client.query(
           `SELECT COALESCE(SUM(cantidad_actual), 0) AS cantidad_actual
            FROM lote_detalle
@@ -336,7 +334,7 @@ export class VentaService {
           [det.id_producto, data.id_sucursal],
         );
 
-        // cantidad_resultante = stock antes de consumir - lo que se vende
+        //cantidad_resultante = stock antes de consumir - lo que se vende
         const cantidadResultante =
           Number(stockRes.rows[0].cantidad_actual) - det.cantidad;
 
@@ -366,7 +364,7 @@ export class VentaService {
         ]);
       }
 
-      // ── Descontar lotes reacondicionados ────────────────────────────────────
+      //Descontar lotes reacondicionados
       for (const det of detallesCalculados) {
         if (!det.esReacondicionado) continue;
         await client.query(
@@ -377,7 +375,7 @@ export class VentaService {
         );
       }
 
-      // ── Pedido a domicilio ──────────────────────────────────────────────────
+      //Pedido a domicilio
       if (data.canal === "domicilio" && data.direccion_entrega) {
         const destRes = await client.query(
           `INSERT INTO destinatario
@@ -519,11 +517,11 @@ export class VentaService {
       if (!aprobado && nuevoDescuento !== null) {
         await client.query(
           `UPDATE venta
-         SET estado                 = $1,
+         SET estado    = $1,
              id_supervisor_autoriza = $2,
-             descuento_monto        = $3,
-             total                  = $4,
-             updated_by             = $5
+             descuento_monto    = $3,
+             total = $4,
+             updated_by  = $5
          WHERE id_venta = $6`,
           [
             estadoDestino,
@@ -537,9 +535,9 @@ export class VentaService {
       } else {
         await client.query(
           `UPDATE venta
-         SET estado                 = $1,
+         SET estado = $1,
              id_supervisor_autoriza = $2,
-             updated_by             = $3
+             updated_by  = $3
          WHERE id_venta = $4`,
           [estadoDestino, id_supervisor, id_usuario_log, id_venta],
         );
@@ -589,14 +587,14 @@ export class VentaService {
         CONCAT(ev.nombre, ' ', ev.apellido)                  AS vendedor,
         CONCAT(ea.nombre, ' ', ea.apellido)                  AS anulado_por,
         pd.id_pedido,
-        pd.estado                                            AS estado_pedido,
+        pd.estado        AS estado_pedido,
         pd.motivo_fallido,
-        pd.id_repartidor                                     AS id_repartidor_actual,
-        CONCAT(er.nombre, ' ', er.apellido)                  AS repartidor_actual
+        pd.id_repartidor        AS id_repartidor_actual,
+        CONCAT(er.nombre, ' ', er.apellido)     AS repartidor_actual
       FROM venta v
-      JOIN canal_venta   cv ON v.id_canal      = cv.id_canal
-      LEFT JOIN cliente   c ON v.id_cliente    = c.id_cliente
-      LEFT JOIN empleado ev ON v.id_vendedor   = ev.id_empleado
+      JOIN canal_venta   cv ON v.id_canal   = cv.id_canal
+      LEFT JOIN cliente   c ON v.id_cliente  = c.id_cliente
+      LEFT JOIN empleado ev ON v.id_vendedor  = ev.id_empleado
       LEFT JOIN empleado ea ON v.id_anulado_por = ea.id_empleado
       LEFT JOIN pedido_domicilio pd ON pd.id_venta = v.id_venta
       LEFT JOIN empleado er ON pd.id_repartidor = er.id_empleado
@@ -654,22 +652,22 @@ export class VentaService {
     const query = `
       SELECT
         v.id_venta,
-        v.created_at                                                 AS fecha,
+        v.created_at  AS fecha,
         v.estado,
         v.subtotal,
         v.descuento_monto,
         v.total,
         ROUND((v.descuento_monto / NULLIF(v.subtotal, 0)) * 100, 2) AS pct_descuento,
-        COALESCE(c.nombre_razon_social, 'Consumidor Final')          AS cliente,
+        COALESCE(c.nombre_razon_social, 'Consumidor Final')    AS cliente,
         COALESCE(CONCAT(ev.nombre, ' ', ev.apellido), 'Sin asignar') AS vendedor,
         CASE
           WHEN v.descuento_monto / NULLIF(v.subtotal, 0) > 0.05 THEN 'requirio_aprobacion'
           ELSE 'automatico'
-        END                                                           AS tipo_descuento,
-        COALESCE(CONCAT(es.nombre, ' ', es.apellido), NULL)          AS aprobado_por
+        END     AS tipo_descuento,
+        COALESCE(CONCAT(es.nombre, ' ', es.apellido), NULL)      AS aprobado_por
       FROM venta v
-      LEFT JOIN cliente  c  ON v.id_cliente             = c.id_cliente
-      LEFT JOIN empleado ev ON v.id_vendedor            = ev.id_empleado
+      LEFT JOIN cliente  c  ON v.id_cliente = c.id_cliente
+      LEFT JOIN empleado ev ON v.id_vendedor  = ev.id_empleado
       LEFT JOIN empleado es ON v.id_supervisor_autoriza = es.id_empleado
       WHERE v.id_sucursal  = $1
         AND v.descuento_monto > 0

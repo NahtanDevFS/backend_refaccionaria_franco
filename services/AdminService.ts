@@ -7,7 +7,7 @@ export class AdminService {
 
   constructor(private readonly pool: Pool) {}
 
-  // ─── Listar todos los empleados con salario actual y usuario ─────────────
+  //Listar todos los empleados con salario actual y usuario
   async listarEmpleados(id_sucursal?: number) {
     const filtroSucursal = id_sucursal
       ? `AND e.id_sucursal = ${Number(id_sucursal)}`
@@ -25,21 +25,21 @@ export class AdminService {
         e.fecha_ingreso,
         e.activo,
         s.id_sucursal,
-        s.nombre                              AS sucursal,
+        s.nombre AS sucursal,
         p.id_puesto,
-        p.nombre                              AS puesto,
+        p.nombre AS puesto,
         u.id_usuario,
         u.username,
-        u.activo                              AS usuario_activo,
-        r.nombre                              AS rol,
+        u.activo AS usuario_activo,
+        r.nombre AS rol,
         hs.salario_base,
-        hs.fecha_vigencia                     AS salario_desde
+        hs.fecha_vigencia  AS salario_desde
       FROM empleado e
-      INNER JOIN sucursal    s  ON e.id_sucursal = s.id_sucursal
-      INNER JOIN puesto      p  ON e.id_puesto   = p.id_puesto
-      LEFT  JOIN usuario     u  ON u.id_empleado = e.id_empleado
+      INNER JOIN sucursal   s  ON e.id_sucursal = s.id_sucursal
+      INNER JOIN puesto   p  ON e.id_puesto   = p.id_puesto
+      LEFT  JOIN usuario  u  ON u.id_empleado = e.id_empleado
       LEFT  JOIN usuario_rol ur ON ur.id_usuario = u.id_usuario
-      LEFT  JOIN rol         r  ON r.id_rol      = ur.id_rol
+      LEFT  JOIN rol  r  ON r.id_rol      = ur.id_rol
       LEFT  JOIN LATERAL (
           SELECT salario_base, fecha_vigencia
           FROM   historial_salario
@@ -88,7 +88,7 @@ export class AdminService {
     }));
   }
 
-  // ─── Crear empleado + salario + usuario en una sola transacción ──────────
+  //Crear empleado + salario + usuario en una sola transacción
   async crearEmpleadoCompleto(data: {
     nombre: string;
     apellido: string;
@@ -109,7 +109,7 @@ export class AdminService {
     try {
       await client.query("BEGIN");
 
-      // 1. Verificar que el username no exista
+      //Verificar que el username no exista
       const usernameExiste = await client.query(
         "SELECT id_usuario FROM usuario WHERE username = $1",
         [data.username],
@@ -118,7 +118,7 @@ export class AdminService {
         throw new Error(`El username '${data.username}' ya está en uso.`);
       }
 
-      // 2. Verificar DPI único si se provee
+      //Verificar DPI único si se provee
       if (data.dpi) {
         const dpiExiste = await client.query(
           "SELECT id_empleado FROM empleado WHERE dpi = $1",
@@ -129,7 +129,7 @@ export class AdminService {
         }
       }
 
-      // 3. Insertar empleado
+      //Insertar empleado
       const empRes = await client.query(
         `INSERT INTO empleado
            (id_sucursal, id_puesto, nombre, apellido, dpi, nit,
@@ -150,7 +150,7 @@ export class AdminService {
       );
       const id_empleado = empRes.rows[0].id_empleado;
 
-      // 4. Insertar salario inicial en historial (sin tipo_contrato)
+      //Insertar salario inicial en historial
       await client.query(
         `INSERT INTO historial_salario
            (id_empleado, salario_base, fecha_vigencia, motivo_cambio, registrado_por)
@@ -163,7 +163,7 @@ export class AdminService {
         ],
       );
 
-      // 5. Hashear contraseña y crear usuario
+      //Hashear contraseña y crear usuario
       const hash = await bcrypt.hash(data.password, this.SALT_ROUNDS);
       const usuRes = await client.query(
         `INSERT INTO usuario (id_empleado, username, password_hash, activo)
@@ -173,7 +173,7 @@ export class AdminService {
       );
       const id_usuario = usuRes.rows[0].id_usuario;
 
-      // 6. Asignar rol
+      //Asignar rol
       await client.query(
         "INSERT INTO usuario_rol (id_usuario, id_rol) VALUES ($1,$2)",
         [id_usuario, data.id_rol],
@@ -189,7 +189,7 @@ export class AdminService {
     }
   }
 
-  // ─── Registrar cambio de salario (historial) ─────────────────────────────
+  //Registrar cambio de salario (historial)
   async actualizarSalario(data: {
     id_empleado: number;
     salario_base: number;
@@ -221,7 +221,7 @@ export class AdminService {
     return { id_historial: result.rows[0].id_historial };
   }
 
-  // ─── Historial de salarios de un empleado ────────────────────────────────
+  //Historial de salarios de un empleado
   async obtenerHistorialSalario(id_empleado: number) {
     const result = await this.pool.query(
       `SELECT
@@ -253,7 +253,7 @@ export class AdminService {
     }));
   }
 
-  // ─── Catálogos de apoyo ──────────────────────────────────────────────────
+  //Catálogos de apoyo
   async listarSucursales() {
     const r = await this.pool.query(
       "SELECT id_sucursal, nombre FROM sucursal WHERE activo=true ORDER BY nombre",
@@ -275,7 +275,7 @@ export class AdminService {
     return r.rows;
   }
 
-  // ─── Catálogo de tipos de cliente ────────────────────────────────────────
+  //Catálogo de tipos de cliente
   async listarTiposCliente() {
     const r = await this.pool.query(
       "SELECT id_tipo_cliente, nombre FROM tipo_cliente WHERE activo=true ORDER BY nombre",

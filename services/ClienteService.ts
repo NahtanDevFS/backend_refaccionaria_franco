@@ -5,8 +5,7 @@ import { CrearClienteDTO } from "../dtos/ClienteDTO";
 export class ClienteService {
   constructor(private readonly pool: Pool) {}
 
-  // ── Helper: resuelve el id_tipo_cliente desde el nombre en string.
-  //    Si el nombre no existe en el catálogo, devuelve el id de 'particular'.
+  //Helper resuelve el id_tipo_cliente desde el nombre en string, si el nombre no existe en el catálogo, devuelve el id de 'particular'.
   private async resolverIdTipoCliente(
     client: any,
     nombreTipo: string,
@@ -19,7 +18,7 @@ export class ClienteService {
     );
     if (res.rows.length > 0) return res.rows[0].id_tipo_cliente;
 
-    // Fallback a 'particular' si el valor no está en el catálogo
+    //Fallback a 'particular' si el valor no está en el catálogo
     const fallback = await client.query(
       `SELECT id_tipo_cliente FROM tipo_cliente WHERE nombre = 'particular' LIMIT 1`,
     );
@@ -56,7 +55,7 @@ export class ClienteService {
       dto.telefono = soloDigitos;
     }
 
-    // Resolver id_tipo_cliente desde el nombre recibido del frontend
+    //Resolver id_tipo_cliente desde el nombre recibido del frontend
     const id_tipo_cliente = await this.resolverIdTipoCliente(
       this.pool,
       dto.tipo_cliente,

@@ -2,8 +2,7 @@
 
 export enum CanalVenta {
   MOSTRADOR = "mostrador",
-  TELEFONO = "telefono",
-  WHATSAPP = "whatsapp",
+  DOMICILIO = "domicilio",
 }
 
 export enum EstadoVenta {

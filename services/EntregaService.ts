@@ -33,7 +33,6 @@ export class EntregaService {
       JOIN destinatario d ON pd.id_destinatario = d.id_destinatario
       WHERE pd.id_repartidor = $1
         AND (
-          -- Pedidos activos en ruta (lógica original intacta)
           (
             pd.estado = 'pendiente'
             AND (
@@ -43,14 +42,12 @@ export class EntregaService {
             )
           )
           OR
-          -- Pedidos cancelados que el repartidor aún NO ha confirmado ver
           (
             pd.estado = 'cancelado'
             AND pd.fecha_visto_cancelacion IS NULL
           )
         )
       ORDER BY
-        -- Los cancelados aparecen primero para que el repartidor los note
         CASE pd.estado WHEN 'cancelado' THEN 0 ELSE 1 END ASC,
         pd.id_pedido ASC;
     `;
@@ -285,8 +282,6 @@ export class EntregaService {
         pd.monto_cobrado_contra_entrega,
         v.total,
         v.pago_contra_entrega,
-        -- Subquery en lugar de LEFT JOIN para evitar filas duplicadas
-        -- cuando hay más de un pago asociado a la misma venta
         (SELECT pg.id_pago
          FROM pago pg
          WHERE pg.id_venta = v.id_venta

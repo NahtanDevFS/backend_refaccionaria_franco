@@ -10,18 +10,18 @@ export const crearGarantiaRouter = (pool: Pool): Router => {
   const service = new GarantiaService(pool);
   const controller = new GarantiaController(service);
 
-  // Solicitudes
+  //Solicitudes
   router.post("/", controller.crear);
   router.post("/resolver", controller.resolver);
 
-  // Getters para pestañas
+  //Getters para pestañas
   router.get("/sucursal/:id_sucursal/pendientes", controller.obtenerPendientes);
   router.get(
     "/sucursal/:id_sucursal/inspecciones",
     controller.obtenerPendientesInspeccion,
   );
 
-  // Acción de inspección técnica
+  //Acción de inspección técnica
   router.post("/retorno/inspeccion", controller.inspeccionarRetorno);
 
   router.get("/sucursal/:id_sucursal/historial", controller.obtenerHistorial);

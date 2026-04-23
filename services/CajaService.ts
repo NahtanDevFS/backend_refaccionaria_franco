@@ -200,12 +200,12 @@ export class CajaService {
          p.monto, p.referencia,
          p.id_cajero, p.id_repartidor,
          COALESCE(c.nombre_razon_social, 'Consumidor Final') AS cliente,
-         COALESCE(c.nit, 'CF')                               AS nit,
-         c.direccion                                          AS direccion_cliente,
-         CONCAT(ec.nombre, ' ', ec.apellido)                 AS cajero,
-         CONCAT(er.nombre, ' ', er.apellido)                 AS repartidor,
+         COALESCE(c.nit, 'CF')   AS nit,
+         c.direccion        AS direccion_cliente,
+         CONCAT(ec.nombre, ' ', ec.apellido)        AS cajero,
+         CONCAT(er.nombre, ' ', er.apellido)    AS repartidor,
          v.subtotal,
-         COALESCE(v.descuento_monto, 0)                      AS descuento_monto,
+         COALESCE(v.descuento_monto, 0)  AS descuento_monto,
          v.total
        FROM pago p
        JOIN venta v ON p.id_venta = v.id_venta

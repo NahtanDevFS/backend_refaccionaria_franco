@@ -40,7 +40,7 @@ export function obtenerPoolPorRol(rol: string): Pool {
     password: process.env.DB_ROLE_PASSWORD,
   });
 
-  console.log(`[DB] Pool creado para rol: ${rol} → usuario PG: ${pgUser}`);
+  console.log(`[DB] Pool creado para rol: ${rol} - usuario PG: ${pgUser}`);
 
   return poolCache[rol];
 }
