@@ -8,9 +8,11 @@ export class CajaService {
   async obtenerPendientes(id_sucursal: number) {
     const result = await this.pool.query(
       `SELECT
-         v.id_venta, v.estado, v.canal, v.total, v.pago_contra_entrega, v.created_at,
+         v.id_venta, v.estado, cv.nombre AS canal, v.total,
+         v.pago_contra_entrega, v.created_at,
          COALESCE(c.nombre_razon_social, 'Consumidor Final') AS cliente
        FROM venta v
+       JOIN canal_venta cv ON v.id_canal = cv.id_canal
        LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
        WHERE v.id_sucursal = $1
          AND v.estado IN ('pendiente_pago')
@@ -36,7 +38,6 @@ export class CajaService {
       if (venta.estado === "pagada")
         throw new Error("Esta orden ya fue pagada.");
 
-      // Bloqueo contra entrega no confirmada
       if (venta.pago_contra_entrega) {
         const pedidoRes = await client.query(
           `SELECT estado FROM pedido_domicilio WHERE id_venta = $1`,
@@ -58,7 +59,7 @@ export class CajaService {
 
       await client.query(
         `INSERT INTO pago (id_venta, id_cajero, metodo_pago, monto, referencia)
-       VALUES ($1, $2, $3, $4, $5)`,
+         VALUES ($1, $2, $3, $4, $5)`,
         [
           data.id_venta,
           id_cajero,
@@ -86,10 +87,10 @@ export class CajaService {
     const result = await this.pool.query(
       `SELECT metodo_pago, COALESCE(SUM(monto), 0) AS total
        FROM pago
-       WHERE id_cajero    = $1
+       WHERE id_cajero      = $1
          AND DATE(fecha_pago) = CURRENT_DATE
-         AND id_arqueo    IS NULL
-         AND activo       = true          
+         AND id_arqueo      IS NULL
+         AND activo         = true
        GROUP BY metodo_pago`,
       [id_cajero],
     );
@@ -107,19 +108,19 @@ export class CajaService {
          p.id_repartidor,
          p.monto,
          p.fecha_pago,
-         CONCAT(er.nombre, ' ', er.apellido)                    AS repartidor,
-         COALESCE(c.nombre_razon_social, 'Consumidor Final')    AS cliente,
-         d.direccion_texto                                       AS direccion_entrega
+         CONCAT(er.nombre, ' ', er.apellido)                 AS repartidor,
+         COALESCE(c.nombre_razon_social, 'Consumidor Final') AS cliente,
+         d.direccion_texto                                    AS direccion_entrega
        FROM pago p
-       JOIN venta            v  ON p.id_venta      = v.id_venta
-       JOIN empleado         er ON p.id_repartidor = er.id_empleado
-       LEFT JOIN cliente      c ON v.id_cliente    = c.id_cliente
-       LEFT JOIN pedido_domicilio pd ON pd.id_venta       = v.id_venta
-       LEFT JOIN destinatario     d  ON pd.id_destinatario = d.id_destinatario
-       WHERE p.id_cajero    IS NULL
-         AND p.id_repartidor IS NOT NULL
-         AND p.activo        = true      
-         AND v.id_sucursal   = $1
+       JOIN venta              v  ON p.id_venta        = v.id_venta
+       JOIN empleado           er ON p.id_repartidor   = er.id_empleado
+       LEFT JOIN cliente        c ON v.id_cliente      = c.id_cliente
+       LEFT JOIN pedido_domicilio pd ON pd.id_venta      = v.id_venta
+       LEFT JOIN destinatario    d  ON pd.id_destinatario = d.id_destinatario
+       WHERE p.id_cajero      IS NULL
+         AND p.id_repartidor  IS NOT NULL
+         AND p.activo          = true
+         AND v.id_sucursal     = $1
        ORDER BY p.fecha_pago ASC`,
       [id_sucursal],
     );
@@ -151,10 +152,10 @@ export class CajaService {
         `SELECT COUNT(*) AS total
          FROM pago p
          JOIN venta v ON p.id_venta = v.id_venta
-         WHERE p.id_pago        = ANY($1::int[])
+         WHERE p.id_pago       = ANY($1::int[])
            AND p.id_repartidor  = $2
-           AND p.id_cajero      IS NULL
-           AND p.activo         = true  
+           AND p.id_cajero     IS NULL
+           AND p.activo         = true
            AND v.id_sucursal    = $3`,
         [id_pagos, id_repartidor, id_sucursal],
       );
@@ -212,7 +213,7 @@ export class CajaService {
        LEFT JOIN empleado  er ON p.id_repartidor = er.id_empleado
        WHERE v.id_sucursal     = $1
          AND DATE(p.fecha_pago) BETWEEN $2 AND $3
-         AND p.activo           = true    
+         AND p.activo           = true
        ORDER BY p.fecha_pago DESC`,
       [id_sucursal, fechaDesde, fechaHasta],
     );

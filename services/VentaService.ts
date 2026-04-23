@@ -5,11 +5,26 @@ import { CrearVentaDTO } from "../dtos/CrearVentaDTO";
 export class VentaService {
   constructor(private readonly pool: Pool) {}
 
+  // ── Helper: resuelve el id_canal a partir del nombre (mostrador/domicilio) ─
+  private async resolverIdCanal(
+    client: { query: Function },
+    nombreCanal: string,
+  ): Promise<number> {
+    const res = await client.query(
+      `SELECT id_canal FROM canal_venta WHERE nombre = $1`,
+      [nombreCanal],
+    );
+    if (res.rows.length === 0)
+      throw new Error(`Canal de venta no reconocido: "${nombreCanal}"`);
+    return res.rows[0].id_canal;
+  }
+
   async obtenerVentas(filtros?: any): Promise<{ data: any[]; total: number }> {
     let baseQuery = `
       FROM venta v
-      LEFT JOIN cliente  c ON v.id_cliente  = c.id_cliente
-      LEFT JOIN empleado e ON v.id_vendedor = e.id_empleado
+      LEFT JOIN canal_venta  cv ON v.id_canal    = cv.id_canal
+      LEFT JOIN cliente       c ON v.id_cliente  = c.id_cliente
+      LEFT JOIN empleado      e ON v.id_vendedor = e.id_empleado
       LEFT JOIN pedido_domicilio pd ON pd.id_venta = v.id_venta
       WHERE 1=1
     `;
@@ -62,7 +77,7 @@ export class VentaService {
         v.created_at                                          AS fecha,
         COALESCE(c.nombre_razon_social, 'Consumidor Final')   AS cliente,
         CONCAT(e.nombre, ' ', e.apellido)                     AS vendedor,
-        v.canal,
+        cv.nombre                                             AS canal,
         v.subtotal,
         v.descuento_monto                                     AS descuento,
         v.monto_iva,
@@ -99,8 +114,8 @@ export class VentaService {
       SELECT e.id_empleado, e.nombre, e.apellido
       FROM empleado e
       INNER JOIN puesto p ON e.id_puesto = p.id_puesto
-      WHERE e.id_sucursal = $1 
-        AND p.nombre ILIKE '%vendedor%' 
+      WHERE e.id_sucursal = $1
+        AND p.nombre ILIKE '%vendedor%'
         AND e.activo = true;
     `;
     const result = await this.pool.query(query, [id_sucursal]);
@@ -116,6 +131,9 @@ export class VentaService {
     try {
       await client.query("BEGIN");
 
+      // ── Resolver canal ──────────────────────────────────────────────────────
+      const id_canal = await this.resolverIdCanal(client, data.canal);
+
       // ── Resolver cliente ────────────────────────────────────────────────────
       let id_cliente = null;
 
@@ -127,9 +145,6 @@ export class VentaService {
         if (clienteRes.rows.length > 0) {
           id_cliente = clienteRes.rows[0].id_cliente;
         } else if (data.cliente_nuevo) {
-          // ── Resolver id_tipo_cliente desde el catálogo ─────────────────────
-          // El frontend envía tipo_cliente como string (ej. 'particular').
-          // Se busca el id correspondiente; si no existe, se usa 'particular'.
           const tipoRes = await client.query(
             `SELECT id_tipo_cliente FROM tipo_cliente
              WHERE LOWER(nombre) = LOWER($1) AND activo = true
@@ -169,105 +184,88 @@ export class VentaService {
       }
 
       // ── Validar stock y calcular precios ────────────────────────────────────
-      // Para productos normales también guardamos id_inventario, necesario
-      // para insertar el movimiento después de crear la venta.
+      const pctDescuento = data.descuento_porcentaje ?? 0;
+      const esContraEntrega = data.pago_contra_entrega ?? false;
+
+      const umbralesSucursal = await client.query(
+        `SELECT descuento_max_sin_aprobacion FROM sucursal WHERE id_sucursal = $1`,
+        [data.id_sucursal],
+      );
+      const umbral = Number(
+        umbralesSucursal.rows[0]?.descuento_max_sin_aprobacion ?? 5,
+      );
+
+      const estadoVenta =
+        pctDescuento > umbral ? "pendiente_autorizacion" : "pendiente_pago";
+
       const detallesCalculados: {
         id_producto: number;
         id_producto_reacondicionado?: number;
         cantidad: number;
         precioUnitario: number;
-        id_inventario?: number; // solo para productos normales
+        id_inventario?: number;
         esReacondicionado: boolean;
       }[] = [];
 
       for (const det of data.detalles) {
         if (det.id_producto_reacondicionado) {
-          // ── Producto reacondicionado ───────────────────────────────────────
-          // disponibilidad = cantidad > 0 (estado eliminado de la tabla)
-          const reacRes = await client.query(
-            `SELECT precio_venta_reac, cantidad
-             FROM lote_reacondicionado
-             WHERE id_lote = $1 AND id_sucursal = $2 AND cantidad > 0
+          const loteRes = await client.query(
+            `SELECT lr.precio_venta_reac, lr.cantidad
+             FROM lote_reacondicionado lr
+             WHERE lr.id_lote = $1
+               AND lr.id_sucursal = $2
+               AND lr.estado = 'disponible'
              FOR UPDATE`,
             [det.id_producto_reacondicionado, data.id_sucursal],
           );
-
-          if (
-            reacRes.rows.length === 0 ||
-            reacRes.rows[0].cantidad < det.cantidad
-          ) {
+          if (loteRes.rows.length === 0)
             throw new Error(
-              `Stock insuficiente para el producto reacondicionado ID ${det.id_producto_reacondicionado}`,
+              `Lote reacondicionado ${det.id_producto_reacondicionado} no disponible`,
             );
-          }
-
-          // Solo descuenta cantidad — columna estado fue eliminada
-          await client.query(
-            `UPDATE lote_reacondicionado
-             SET cantidad = cantidad - $1
-             WHERE id_lote = $2`,
-            [det.cantidad, det.id_producto_reacondicionado],
-          );
+          if (Number(loteRes.rows[0].cantidad) < det.cantidad)
+            throw new Error(
+              `Stock insuficiente en lote reacondicionado ${det.id_producto_reacondicionado}`,
+            );
 
           detallesCalculados.push({
             id_producto: det.id_producto,
             id_producto_reacondicionado: det.id_producto_reacondicionado,
             cantidad: det.cantidad,
-            precioUnitario: Number(reacRes.rows[0].precio_venta_reac),
+            precioUnitario: Number(loteRes.rows[0].precio_venta_reac),
             esReacondicionado: true,
           });
         } else {
-          // ── Producto normal ────────────────────────────────────────────────
-          const prodRes = await client.query(
-            `SELECT p.precio_venta, i.id_inventario, i.cantidad_actual
-             FROM producto p
-             JOIN inventario_sucursal i
-               ON p.id_producto = i.id_producto
-             WHERE p.id_producto = $1 AND i.id_sucursal = $2
+          const invRes = await client.query(
+            `SELECT i.id_inventario, i.cantidad_actual, p.precio_venta
+             FROM inventario_sucursal i
+             JOIN producto p ON i.id_producto = p.id_producto
+             WHERE i.id_producto = $1 AND i.id_sucursal = $2
              FOR UPDATE`,
             [det.id_producto, data.id_sucursal],
           );
-
-          if (
-            prodRes.rows.length === 0 ||
-            prodRes.rows[0].cantidad_actual < det.cantidad
-          ) {
+          if (invRes.rows.length === 0)
             throw new Error(
-              `Stock insuficiente para el producto ID ${det.id_producto}`,
+              `Producto ${det.id_producto} sin inventario en esta sucursal`,
             );
-          }
-
-          await client.query(
-            `UPDATE inventario_sucursal
-             SET cantidad_actual = cantidad_actual - $1
-             WHERE id_producto = $2 AND id_sucursal = $3`,
-            [det.cantidad, det.id_producto, data.id_sucursal],
-          );
+          if (Number(invRes.rows[0].cantidad_actual) < det.cantidad)
+            throw new Error(
+              `Stock insuficiente para producto ${det.id_producto}`,
+            );
 
           detallesCalculados.push({
             id_producto: det.id_producto,
             cantidad: det.cantidad,
-            precioUnitario: Number(prodRes.rows[0].precio_venta),
-            id_inventario: Number(prodRes.rows[0].id_inventario),
+            precioUnitario: Number(invRes.rows[0].precio_venta),
+            id_inventario: invRes.rows[0].id_inventario,
             esReacondicionado: false,
           });
         }
       }
 
-      // ── Crear la venta (los triggers calculan subtotal/total/iva) ───────────
-      const pctDescuento = data.descuento_porcentaje || 0;
-      const esContraEntrega = data.pago_contra_entrega || false;
-
-      let estadoVenta = "pendiente_pago";
-      if (pctDescuento > 5) {
-        estadoVenta = "pendiente_autorizacion";
-      } else if (data.canal === "domicilio" && esContraEntrega) {
-        estadoVenta = "pendiente_cobro_contra_entrega";
-      }
-
+      // ── Insertar venta ──────────────────────────────────────────────────────
       const ventaRes = await client.query(
         `INSERT INTO venta
-           (id_sucursal, id_vendedor, id_cliente, canal, pago_contra_entrega,
+           (id_sucursal, id_vendedor, id_cliente, id_canal, pago_contra_entrega,
             estado, subtotal, descuento_monto, monto_iva, total)
          VALUES ($1,$2,$3,$4,$5,$6, 0,$7, 0, 0)
          RETURNING id_venta`,
@@ -275,10 +273,10 @@ export class VentaService {
           data.id_sucursal,
           data.id_vendedor,
           id_cliente,
-          data.canal,
+          id_canal,
           esContraEntrega,
           estadoVenta,
-          0, // descuento_monto placeholder — se ajusta después del trigger
+          0,
         ],
       );
 
@@ -313,8 +311,6 @@ export class VentaService {
       }
 
       // ── FIFO: registrar movimiento y consumir lotes para productos normales ─
-      // Los reacondicionados no pasan por lote_inventario (tienen su propia
-      // tabla lote_reacondicionado y no tienen costo de adquisición FIFO).
       for (const det of detallesCalculados) {
         if (det.esReacondicionado) continue;
 
@@ -352,6 +348,17 @@ export class VentaService {
           det.cantidad,
           id_movimiento,
         ]);
+      }
+
+      // ── Descontar lotes reacondicionados ────────────────────────────────────
+      for (const det of detallesCalculados) {
+        if (!det.esReacondicionado) continue;
+        await client.query(
+          `UPDATE lote_reacondicionado
+           SET cantidad = cantidad - $1
+           WHERE id_lote = $2`,
+          [det.cantidad, det.id_producto_reacondicionado],
+        );
       }
 
       // ── Pedido a domicilio ──────────────────────────────────────────────────
@@ -430,7 +437,7 @@ export class VentaService {
 
   async obtenerPendientesAutorizacion(id_sucursal: number): Promise<any[]> {
     const query = `
-      SELECT 
+      SELECT
         v.id_venta,
         v.created_at                                                AS fecha,
         COALESCE(c.nombre_razon_social, 'Consumidor Final')         AS cliente,
@@ -466,9 +473,13 @@ export class VentaService {
     try {
       await client.query("BEGIN");
 
+      // Ahora leer canal via JOIN — no existe columna directa
       const ventaRes = await client.query(
-        `SELECT estado, canal, pago_contra_entrega, id_sucursal, subtotal
-         FROM venta WHERE id_venta = $1 FOR UPDATE`,
+        `SELECT v.estado, cv.nombre AS canal, v.pago_contra_entrega,
+                v.id_sucursal, v.subtotal
+         FROM venta v
+         JOIN canal_venta cv ON v.id_canal = cv.id_canal
+         WHERE v.id_venta = $1 FOR UPDATE`,
         [id_venta],
       );
       if (ventaRes.rows.length === 0) throw new Error("Venta no encontrada");
@@ -477,68 +488,73 @@ export class VentaService {
       if (venta.estado !== "pendiente_autorizacion")
         throw new Error("La venta no está pendiente de autorización");
 
-      const estadoDestino =
-        venta.canal === "domicilio" && venta.pago_contra_entrega
-          ? "pendiente_cobro_contra_entrega"
-          : "pendiente_pago";
+      let estadoDestino: string;
+      let nuevoDescuento: number | null = null;
+      let nuevoTotal: number | null = null;
 
       if (aprobado) {
-        await client.query(
-          `UPDATE venta
-           SET estado               = $1,
-               id_supervisor_autoriza = $2,
-               updated_at           = NOW()
-           WHERE id_venta = $3`,
-          [estadoDestino, id_supervisor, id_venta],
-        );
-
-        await client.query(
-          `INSERT INTO log_auditoria
-             (id_usuario, tabla_afectada, accion, id_registro, datos_nuevos)
-           VALUES ($1, 'venta', 'aprobacion_descuento', $2, $3)`,
-          [
-            id_usuario_log,
-            id_venta,
-            JSON.stringify({
-              estado: estadoDestino,
-              id_supervisor_autoriza: id_supervisor,
-            }),
-          ],
-        );
+        estadoDestino =
+          venta.canal === "domicilio" && venta.pago_contra_entrega
+            ? "pendiente_cobro_contra_entrega"
+            : "pendiente_pago";
       } else {
-        const subtotal = Number(venta.subtotal);
-        const nuevoDescuento = Math.round(subtotal * 0.05 * 100) / 100;
-        const nuevoTotal = Math.round((subtotal - nuevoDescuento) * 100) / 100;
+        // Rechazado: aplicar descuento máximo automático (5%)
+        estadoDestino =
+          venta.canal === "domicilio" && venta.pago_contra_entrega
+            ? "pendiente_cobro_contra_entrega"
+            : "pendiente_pago";
+        nuevoDescuento = Number((Number(venta.subtotal) * 0.05).toFixed(2));
+        nuevoTotal = Number((Number(venta.subtotal) * 0.95).toFixed(2));
+      }
 
+      if (!aprobado && nuevoDescuento !== null) {
         await client.query(
           `UPDATE venta
            SET estado                = $1,
                id_supervisor_autoriza = $2,
                descuento_monto       = $3,
                total                 = $4,
-               updated_at            = NOW()
-           WHERE id_venta = $5`,
-          [estadoDestino, id_supervisor, nuevoDescuento, nuevoTotal, id_venta],
-        );
-
-        await client.query(
-          `INSERT INTO log_auditoria
-             (id_usuario, tabla_afectada, accion, id_registro, datos_nuevos)
-           VALUES ($1, 'venta', 'rechazo_con_descuento_base', $2, $3)`,
+               updated_by            = $5
+           WHERE id_venta = $6`,
           [
+            estadoDestino,
+            id_supervisor,
+            nuevoDescuento,
+            nuevoTotal,
             id_usuario_log,
             id_venta,
-            JSON.stringify({
-              estado: estadoDestino,
-              id_supervisor_autoriza: id_supervisor,
-              descuento_aplicado: nuevoDescuento,
-              total_resultante: nuevoTotal,
-              motivo:
-                "Descuento solicitado rechazado — se aplica 5% base automáticamente",
-            }),
           ],
         );
+      } else {
+        await client.query(
+          `UPDATE venta
+           SET estado                = $1,
+               id_supervisor_autoriza = $2,
+               updated_by            = $3
+           WHERE id_venta = $4`,
+          [estadoDestino, id_supervisor, id_usuario_log, id_venta],
+        );
       }
+
+      await client.query(
+        `INSERT INTO auditoria_acciones
+           (id_usuario, tabla_afectada, accion, id_registro, datos_nuevos)
+         VALUES ($1, 'venta', $2, $3, $4)`,
+        [
+          id_usuario_log,
+          aprobado ? "aprobacion_descuento" : "rechazo_con_descuento_base",
+          id_venta,
+          JSON.stringify({
+            estado: estadoDestino,
+            id_supervisor_autoriza: id_supervisor,
+            descuento_aplicado: nuevoDescuento,
+            total_resultante: nuevoTotal,
+            motivo: aprobado
+              ? "Descuento aprobado por supervisor"
+              : "Descuento solicitado rechazado — se aplica 5% base automáticamente",
+          }),
+        ],
+      );
 
       await client.query("COMMIT");
     } catch (error) {
@@ -552,22 +568,27 @@ export class VentaService {
   async obtenerVentaPorId(
     id_venta: number,
   ): Promise<{ venta: any; detalles: any[] } | null> {
+    // Usa v.* pero el canal ahora viene del JOIN con canal_venta
     const queryVenta = `
       SELECT
-        v.*,
-        COALESCE(c.nombre_razon_social, 'Consumidor Final')  AS cliente,
+        v.id_venta, v.id_sucursal, v.id_vendedor, v.id_cliente,
+        v.id_supervisor_autoriza, v.estado, v.subtotal, v.descuento_monto,
+        v.total, v.created_at, v.updated_at, v.pago_contra_entrega,
+        v.monto_iva, v.created_by, v.updated_by, v.id_anulado_por,
+        v.motivo_anulacion, v.monto_devolucion,
+        cv.nombre                                            AS canal,
+        COALESCE(c.nombre_razon_social, 'Consumidor Final') AS cliente,
         CONCAT(ev.nombre, ' ', ev.apellido)                  AS vendedor,
         CONCAT(ea.nombre, ' ', ea.apellido)                  AS anulado_por,
-        v.motivo_anulacion,
-        v.monto_devolucion,
         pd.id_pedido,
         pd.estado                                            AS estado_pedido,
         pd.motivo_fallido,
         pd.id_repartidor                                     AS id_repartidor_actual,
         CONCAT(er.nombre, ' ', er.apellido)                  AS repartidor_actual
       FROM venta v
-      LEFT JOIN cliente  c  ON v.id_cliente     = c.id_cliente
-      LEFT JOIN empleado ev ON v.id_vendedor    = ev.id_empleado
+      JOIN canal_venta   cv ON v.id_canal      = cv.id_canal
+      LEFT JOIN cliente   c ON v.id_cliente    = c.id_cliente
+      LEFT JOIN empleado ev ON v.id_vendedor   = ev.id_empleado
       LEFT JOIN empleado ea ON v.id_anulado_por = ea.id_empleado
       LEFT JOIN pedido_domicilio pd ON pd.id_venta = v.id_venta
       LEFT JOIN empleado er ON pd.id_repartidor = er.id_empleado
@@ -575,7 +596,7 @@ export class VentaService {
     `;
 
     const queryDetalles = `
-      SELECT dv.id_detalle, dv.id_producto, p.nombre as producto, p.sku, p.garantia_dias,
+      SELECT dv.id_detalle, dv.id_producto, p.nombre AS producto, p.sku, p.garantia_dias,
              dv.cantidad, dv.precio_unitario, dv.subtotal_linea, dv.monto_iva,
              EXISTS (
                SELECT 1 FROM garantia g
