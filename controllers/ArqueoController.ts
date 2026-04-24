@@ -1,3 +1,4 @@
+// controllers/ArqueoController.ts
 import { Request, Response } from "express";
 import { ArqueoService } from "../services/ArqueoService";
 import { generarArqueoSchema } from "../schemas/arqueo.schema";
@@ -8,21 +9,28 @@ export class ArqueoController {
 
   procesarCierre = async (req: Request, res: Response): Promise<void> => {
     try {
-      //Validación estricta del payload (Zod)
       const payload = generarArqueoSchema.parse(req.body);
 
-      //Inyectar IDs seguros para la auditoría
+      // id_sucursal puede ser null para GERENTE_REGIONAL —
+      // el arqueo siempre requiere una sucursal concreta
+      const id_sucursal = req.usuario!.id_sucursal;
+      if (id_sucursal === null) {
+        res.status(400).json({
+          exito: false,
+          mensaje: "Este endpoint requiere un usuario asociado a una sucursal.",
+        });
+        return;
+      }
+
       const dtoValidado = {
         ...payload,
-        id_sucursal: req.usuario!.id_sucursal,
+        id_sucursal,
         id_supervisor_verifica: req.usuario!.id_empleado,
       };
 
-      //Ejecutar la auditoría a través del servicio
       const resultado =
         await this.arqueoService.procesarCierreDeCaja(dtoValidado);
 
-      //Responder al cliente
       res.status(201).json(resultado);
     } catch (error) {
       if (error instanceof ZodError) {
@@ -33,7 +41,6 @@ export class ArqueoController {
         });
         return;
       }
-
       res.status(400).json({
         exito: false,
         mensaje:

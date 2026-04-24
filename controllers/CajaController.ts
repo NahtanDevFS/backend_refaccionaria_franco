@@ -19,15 +19,26 @@ const liquidarSchema = z.object({
   id_pagos: z.array(z.number().int().positive()).min(1),
 });
 
+// ── Helper: lanza si el usuario no tiene sucursal asignada ───────────────────
+function requireSucursal(req: Request): number {
+  const id = req.usuario!.id_sucursal;
+  if (id === null)
+    throw new Error(
+      "Este endpoint requiere un usuario asociado a una sucursal.",
+    );
+  return id;
+}
+
 export class CajaController {
   constructor(
     private readonly cajaService: CajaService,
     private readonly arqueoService: ArqueoService,
   ) {}
 
+  // ── Cobros pendientes de mostrador ────────────────────────────────────────
   obtenerPendientes = async (req: Request, res: Response): Promise<void> => {
     try {
-      const id_sucursal = req.usuario!.id_sucursal;
+      const id_sucursal = requireSucursal(req);
       const data = await this.cajaService.obtenerPendientes(id_sucursal);
       res.status(200).json({ success: true, data });
     } catch (error: any) {
@@ -35,6 +46,7 @@ export class CajaController {
     }
   };
 
+  // ── Registrar cobro ───────────────────────────────────────────────────────
   cobrar = async (req: Request, res: Response): Promise<void> => {
     try {
       const id_cajero = req.usuario!.id_empleado;
@@ -46,18 +58,17 @@ export class CajaController {
       });
     } catch (error: any) {
       if (error.errors) {
-        res
-          .status(400)
-          .json({
-            success: false,
-            message: error.errors.map((e: any) => e.message).join(", "),
-          });
+        res.status(400).json({
+          success: false,
+          message: error.errors.map((e: any) => e.message).join(", "),
+        });
       } else {
         res.status(400).json({ success: false, message: error.message });
       }
     }
   };
 
+  // ── Resumen del día ───────────────────────────────────────────────────────
   obtenerResumen = async (req: Request, res: Response): Promise<void> => {
     try {
       const id_cajero = req.usuario!.id_empleado;
@@ -68,16 +79,20 @@ export class CajaController {
     }
   };
 
-  // ── Registro de arqueo — SIN supervisor (se asigna después si hay diferencia)
+  // ── Registrar arqueo (desde caja, sin supervisor) ─────────────────────────
   registrarArqueo = async (req: Request, res: Response): Promise<void> => {
     try {
       const payload = registrarArqueoSchema.parse(req.body);
+
+      // Guard: cajero siempre tiene sucursal
+      const id_sucursal = requireSucursal(req);
+
       const resultado = await this.arqueoService.procesarCierreDeCaja({
         ...payload,
-        id_sucursal: req.usuario!.id_sucursal,
+        id_sucursal,
         id_cajero: req.usuario!.id_empleado,
-        // id_supervisor_verifica no se pasa — queda NULL en BD
       });
+
       res.status(201).json({
         success: true,
         message: resultado.mensaje,
@@ -85,12 +100,10 @@ export class CajaController {
       });
     } catch (error: any) {
       if (error.errors) {
-        res
-          .status(400)
-          .json({
-            success: false,
-            message: error.errors.map((e: any) => e.message).join(", "),
-          });
+        res.status(400).json({
+          success: false,
+          message: error.errors.map((e: any) => e.message).join(", "),
+        });
       } else {
         res.status(400).json({ success: false, message: error.message });
       }
@@ -102,19 +115,17 @@ export class CajaController {
     try {
       const rol = req.usuario!.rol;
       if (!ROLES_SUPERVISOR.includes(rol)) {
-        res
-          .status(403)
-          .json({
-            success: false,
-            message:
-              "Solo supervisores o administradores pueden verificar arqueos.",
-          });
+        res.status(403).json({
+          success: false,
+          message:
+            "Solo supervisores o administradores pueden verificar arqueos.",
+        });
         return;
       }
 
       const id_arqueo = Number(req.params.id);
       const id_supervisor = req.usuario!.id_empleado;
-      const id_sucursal = req.usuario!.id_sucursal;
+      const id_sucursal = requireSucursal(req);
 
       if (!id_arqueo || isNaN(id_arqueo)) {
         res
@@ -145,7 +156,7 @@ export class CajaController {
     res: Response,
   ): Promise<void> => {
     try {
-      const id_sucursal = req.usuario!.id_sucursal;
+      const id_sucursal = requireSucursal(req);
       const data =
         await this.cajaService.obtenerCobrosRepartidoresPendientes(id_sucursal);
       res.status(200).json({ success: true, data });
@@ -158,7 +169,7 @@ export class CajaController {
   liquidarRepartidor = async (req: Request, res: Response): Promise<void> => {
     try {
       const id_cajero = req.usuario!.id_empleado;
-      const id_sucursal = req.usuario!.id_sucursal;
+      const id_sucursal = requireSucursal(req);
       const payload = liquidarSchema.parse(req.body);
 
       const resultado = await this.cajaService.liquidarRepartidor(
@@ -175,12 +186,10 @@ export class CajaController {
       });
     } catch (error: any) {
       if (error.errors) {
-        res
-          .status(400)
-          .json({
-            success: false,
-            message: error.errors.map((e: any) => e.message).join(", "),
-          });
+        res.status(400).json({
+          success: false,
+          message: error.errors.map((e: any) => e.message).join(", "),
+        });
       } else {
         res.status(400).json({ success: false, message: error.message });
       }
@@ -190,7 +199,7 @@ export class CajaController {
   // ── Historial de cobros ───────────────────────────────────────────────────
   obtenerHistorial = async (req: Request, res: Response): Promise<void> => {
     try {
-      const id_sucursal = req.usuario!.id_sucursal;
+      const id_sucursal = requireSucursal(req);
       const { desde, hasta } = req.query as { desde?: string; hasta?: string };
       const data = await this.cajaService.obtenerHistorial(
         id_sucursal,
@@ -209,7 +218,7 @@ export class CajaController {
     res: Response,
   ): Promise<void> => {
     try {
-      const id_sucursal = req.usuario!.id_sucursal;
+      const id_sucursal = requireSucursal(req);
       const rol = req.usuario!.rol;
       const id_cajero_usuario = req.usuario!.id_empleado;
 
@@ -238,9 +247,10 @@ export class CajaController {
     }
   };
 
+  // ── Cajeros de la sucursal ────────────────────────────────────────────────
   obtenerCajeros = async (req: Request, res: Response): Promise<void> => {
     try {
-      const id_sucursal = req.usuario!.id_sucursal;
+      const id_sucursal = requireSucursal(req);
       const data =
         await this.arqueoService.obtenerCajerosDeSucursal(id_sucursal);
       res.status(200).json({ success: true, data });

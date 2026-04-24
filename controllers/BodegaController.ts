@@ -6,16 +6,25 @@ import {
   ajusteInventarioSchema,
 } from "../schemas/bodega.schema";
 
+// ── Helper: lanza si el usuario no tiene sucursal asignada ───────────────────
+function requireSucursal(req: Request): number {
+  const id = req.usuario!.id_sucursal;
+  if (id === null)
+    throw new Error(
+      "Este endpoint requiere un usuario asociado a una sucursal.",
+    );
+  return id;
+}
+
 export class BodegaController {
   constructor(private readonly bodegaService: BodegaService) {}
 
   obtenerInventario = async (req: Request, res: Response): Promise<void> => {
     try {
-      const id_sucursal = req.usuario!.id_sucursal;
-      const filtros = req.query;
+      const id_sucursal = requireSucursal(req);
       const inventario = await this.bodegaService.obtenerInventarioLocal(
         id_sucursal,
-        filtros,
+        req.query,
       );
       res.status(200).json({ success: true, data: inventario });
     } catch (error: any) {
@@ -23,12 +32,10 @@ export class BodegaController {
     }
   };
 
-  //GET /bodega/lotes/:id_producto
-  //Devuelve los lotes activos de un producto en la sucursal del usuario.
-  //Llamada lazy desde el frontend al expandir el panel de lotes.
+  // GET /bodega/lotes/:id_producto
   obtenerLotes = async (req: Request, res: Response): Promise<void> => {
     try {
-      const id_sucursal = req.usuario!.id_sucursal;
+      const id_sucursal = requireSucursal(req);
       const id_producto = Number(req.params.id_producto);
 
       if (isNaN(id_producto) || id_producto <= 0) {
@@ -50,7 +57,7 @@ export class BodegaController {
 
   emitirDespacho = async (req: Request, res: Response): Promise<void> => {
     try {
-      const id_sucursal = req.usuario!.id_sucursal;
+      const id_sucursal = requireSucursal(req);
       const id_usuario = req.usuario!.id_empleado;
       const payload = emitirDespachoSchema.parse(req.body);
 
@@ -74,7 +81,7 @@ export class BodegaController {
 
   obtenerRecepciones = async (req: Request, res: Response): Promise<void> => {
     try {
-      const id_sucursal = req.usuario!.id_sucursal;
+      const id_sucursal = requireSucursal(req);
       const data = await this.bodegaService.obtenerRecepciones(id_sucursal);
       res.status(200).json({ success: true, data });
     } catch (error: any) {
@@ -85,7 +92,7 @@ export class BodegaController {
   confirmarRecepcion = async (req: Request, res: Response): Promise<void> => {
     try {
       const id_despacho = Number(req.params.id);
-      const id_sucursal = req.usuario!.id_sucursal;
+      const id_sucursal = requireSucursal(req);
       const id_usuario = req.usuario!.id_empleado;
 
       await this.bodegaService.confirmarRecepcion(
@@ -104,7 +111,7 @@ export class BodegaController {
 
   registrarAjuste = async (req: Request, res: Response): Promise<void> => {
     try {
-      const id_sucursal = req.usuario!.id_sucursal;
+      const id_sucursal = requireSucursal(req);
       const id_usuario = req.usuario!.id_empleado;
       const payload = ajusteInventarioSchema.parse(req.body);
 

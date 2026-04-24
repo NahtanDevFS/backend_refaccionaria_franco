@@ -1,3 +1,4 @@
+// services/EntregaService.ts
 import { Pool } from "pg";
 import {
   MarcarEntregaExitosaDTO,
@@ -7,12 +8,13 @@ import {
 export class EntregaService {
   constructor(private readonly pool: Pool) {}
 
+  // ── Pedidos activos del repartidor ────────────────────────────────────────
   async obtenerMisPedidos(id_repartidor: number) {
     const query = `
       SELECT
         pd.id_pedido,
         pd.id_venta,
-        pd.estado                       AS estado_pedido,
+        ep.nombre                       AS estado_pedido,
         pd.fecha_visto_cancelacion,
         d.direccion_texto               AS direccion_entrega,
         d.nombre                        AS nombre_contacto,
@@ -29,33 +31,42 @@ export class EntregaService {
           WHERE dv.id_venta = v.id_venta
         ) AS productos
       FROM pedido_domicilio pd
-      JOIN venta        v ON pd.id_venta        = v.id_venta
-      JOIN destinatario d ON pd.id_destinatario = d.id_destinatario
+      JOIN venta         v  ON pd.id_venta        = v.id_venta
+      JOIN destinatario  d  ON pd.id_destinatario = d.id_destinatario
+      JOIN estado_pedido ep ON pd.id_estado_pedido = ep.id_estado_pedido
+      JOIN estado_venta  ev ON v.id_estado_venta   = ev.id_estado_venta
       WHERE pd.id_repartidor = $1
         AND (
           (
-            pd.estado = 'pendiente'
+            ep.nombre = 'pendiente'
             AND (
-              (v.pago_contra_entrega = true AND v.estado IN ('pendiente_cobro_contra_entrega', 'pendiente_pago'))
+              (
+                v.pago_contra_entrega = true
+                AND ev.nombre IN ('pendiente_cobro_contra_entrega', 'pendiente_pago')
+              )
               OR
-              (v.pago_contra_entrega = false AND v.estado = 'pagada')
+              (
+                v.pago_contra_entrega = false
+                AND ev.nombre = 'pagada'
+              )
             )
           )
           OR
           (
-            pd.estado = 'cancelado'
+            ep.nombre = 'cancelado'
             AND pd.fecha_visto_cancelacion IS NULL
           )
         )
       ORDER BY
-        CASE pd.estado WHEN 'cancelado' THEN 0 ELSE 1 END ASC,
-        pd.id_pedido ASC;
+        CASE ep.nombre WHEN 'cancelado' THEN 0 ELSE 1 END ASC,
+        pd.id_pedido ASC
     `;
 
     const result = await this.pool.query(query, [id_repartidor]);
     return result.rows.map((row) => ({ ...row, total: Number(row.total) }));
   }
 
+  // ── Confirmar que el repartidor vio la cancelación ────────────────────────
   async confirmarCancelacion(id_repartidor: number, id_pedido: number) {
     const result = await this.pool.query(
       `UPDATE pedido_domicilio
@@ -63,7 +74,9 @@ export class EntregaService {
            updated_at              = NOW()
        WHERE id_pedido      = $1
          AND id_repartidor  = $2
-         AND estado         = 'cancelado'
+         AND id_estado_pedido = (
+               SELECT id_estado_pedido FROM estado_pedido WHERE nombre = 'cancelado'
+             )
          AND fecha_visto_cancelacion IS NULL
        RETURNING id_pedido`,
       [id_pedido, id_repartidor],
@@ -77,16 +90,19 @@ export class EntregaService {
     return { id_pedido };
   }
 
+  // ── Marcar entrega como exitosa ───────────────────────────────────────────
   async marcarExito(id_repartidor: number, data: MarcarEntregaExitosaDTO) {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
 
       const pedidoRes = await client.query(
-        `SELECT pd.id_venta, pd.estado, v.pago_contra_entrega, v.total, v.id_sucursal
+        `SELECT pd.id_venta, ep.nombre AS estado, v.pago_contra_entrega, v.total, v.id_sucursal
          FROM pedido_domicilio pd
-         JOIN venta v ON pd.id_venta = v.id_venta
-         WHERE pd.id_pedido = $1 AND pd.id_repartidor = $2
+         JOIN venta         v  ON pd.id_venta        = v.id_venta
+         JOIN estado_pedido ep ON pd.id_estado_pedido = ep.id_estado_pedido
+         WHERE pd.id_pedido     = $1
+           AND pd.id_repartidor = $2
          FOR UPDATE`,
         [data.id_pedido, id_repartidor],
       );
@@ -101,7 +117,7 @@ export class EntregaService {
       if (pedido.estado !== "pendiente")
         throw new Error("El pedido ya fue procesado previamente.");
 
-      let id_pago_generado = null;
+      let id_cobro_generado: number | null = null;
 
       if (pedido.pago_contra_entrega) {
         if (
@@ -113,31 +129,49 @@ export class EntregaService {
           );
         }
 
+        // Marcar venta como pagada
         await client.query(
-          `UPDATE venta SET estado = 'pagada', updated_at = NOW() WHERE id_venta = $1`,
+          `UPDATE venta
+           SET id_estado_venta = (
+                 SELECT id_estado_venta FROM estado_venta WHERE nombre = 'pagada'
+               ),
+               updated_at = NOW()
+           WHERE id_venta = $1`,
           [pedido.id_venta],
         );
 
-        const pagoInsert = await client.query(
-          `INSERT INTO pago
-             (id_venta, id_cajero, id_repartidor, metodo_pago, monto, referencia)
-           VALUES ($1, NULL, $2, 'efectivo', $3, 'Cobro en ruta por repartidor')
-           RETURNING id_pago`,
+        // Insertar cobro en ruta (antes INSERT INTO pago)
+        const cobroInsert = await client.query(
+          `INSERT INTO cobro
+             (id_venta, id_cajero, id_repartidor, id_metodo_cobro,
+              monto, referencia, cobro_en_ruta)
+           VALUES (
+             $1, NULL, $2,
+             (SELECT id_metodo_cobro FROM metodo_cobro WHERE nombre = 'efectivo'),
+             $3, 'Cobro en ruta por repartidor', true
+           )
+           RETURNING id_cobro`,
           [pedido.id_venta, id_repartidor, data.monto_cobrado],
         );
-        id_pago_generado = pagoInsert.rows[0].id_pago;
+        id_cobro_generado = cobroInsert.rows[0].id_cobro;
       }
 
+      // Marcar pedido como entregado
       await client.query(
         `UPDATE pedido_domicilio
-         SET estado = 'entregado', fecha_entrega = NOW(), monto_cobrado_contra_entrega = $1
+         SET id_estado_pedido = (
+               SELECT id_estado_pedido FROM estado_pedido WHERE nombre = 'entregado'
+             ),
+             fecha_entrega                 = NOW(),
+             monto_cobrado_contra_entrega  = $1
          WHERE id_pedido = $2`,
         [data.monto_cobrado || 0, data.id_pedido],
       );
 
       await client.query("COMMIT");
 
-      return { id_pago: id_pago_generado };
+      // id_cobro se expone como id_pago para compat. con el frontend
+      return { id_pago: id_cobro_generado };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -146,19 +180,19 @@ export class EntregaService {
     }
   }
 
+  // ── Marcar entrega como fallida ───────────────────────────────────────────
   async marcarFallida(id_repartidor: number, data: MarcarEntregaFallidaDTO) {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
 
-      // Verificar que el pedido existe, pertenece al repartidor y está pendiente
       const pedidoRes = await client.query(
         `SELECT pd.id_pedido, pd.id_venta
          FROM pedido_domicilio pd
-         JOIN venta v ON pd.id_venta = v.id_venta
-         WHERE pd.id_pedido    = $1
+         JOIN estado_pedido ep ON pd.id_estado_pedido = ep.id_estado_pedido
+         WHERE pd.id_pedido     = $1
            AND pd.id_repartidor = $2
-           AND pd.estado        = 'pendiente'
+           AND ep.nombre        = 'pendiente'
          FOR UPDATE`,
         [data.id_pedido, id_repartidor],
       );
@@ -168,12 +202,11 @@ export class EntregaService {
           "Pedido no encontrado, no asignado a este repartidor o ya procesado.",
         );
 
-      // Solo marcar el pedido como fallido — la venta NO se toca.
-      // El supervisor verá la venta en su estado original y decidirá
-      // si anularla, reasignarla o dejarla pendiente.
       await client.query(
         `UPDATE pedido_domicilio
-         SET estado         = 'fallido',
+         SET id_estado_pedido = (
+               SELECT id_estado_pedido FROM estado_pedido WHERE nombre = 'fallido'
+             ),
              motivo_fallido = $1,
              fecha_entrega  = NOW(),
              updated_at     = NOW()
@@ -189,14 +222,18 @@ export class EntregaService {
       client.release();
     }
   }
-  async obtenerComprobante(id_pago: number, id_repartidor: number) {
+
+  // ── Comprobante de cobro (para el repartidor) ─────────────────────────────
+  async obtenerComprobante(id_cobro: number, id_repartidor: number) {
+    // Seguridad: verificar que el cobro pertenece a un pedido del repartidor
     const seguridadRes = await this.pool.query(
-      `SELECT p.id_pago, p.id_venta
-       FROM pago p
-       JOIN pedido_domicilio pd ON pd.id_venta = p.id_venta
-       WHERE p.id_pago = $1 AND pd.id_repartidor = $2
+      `SELECT c.id_cobro AS id_pago, c.id_venta
+       FROM cobro c
+       JOIN pedido_domicilio pd ON pd.id_venta = c.id_venta
+       WHERE c.id_cobro      = $1
+         AND pd.id_repartidor = $2
        LIMIT 1`,
-      [id_pago, id_repartidor],
+      [id_cobro, id_repartidor],
     );
 
     if (seguridadRes.rows.length === 0)
@@ -204,28 +241,34 @@ export class EntregaService {
 
     const id_venta = seguridadRes.rows[0].id_venta;
 
-    const pagoRes = await this.pool.query(
+    const cobroRes = await this.pool.query(
       `SELECT
-         p.id_pago, p.id_venta, p.fecha_pago, p.metodo_pago, p.monto, p.referencia,
-         COALESCE(c.nombre_razon_social, 'Consumidor Final') AS cliente,
-         COALESCE(c.nit, 'CF')                               AS nit,
-         c.direccion                                         AS direccion_cliente,
-         CONCAT(ec.nombre, ' ', ec.apellido)                 AS cajero,
-         CONCAT(er.nombre, ' ', er.apellido)                 AS repartidor,
+         c.id_cobro                                           AS id_pago,
+         c.id_venta,
+         c.fecha_cobro                                        AS fecha_pago,
+         mc.nombre                                            AS metodo_pago,
+         c.monto,
+         c.referencia,
+         COALESCE(cl.nombre_razon_social, 'Consumidor Final') AS cliente,
+         COALESCE(cl.nit, 'CF')                               AS nit,
+         cl.direccion                                         AS direccion_cliente,
+         CONCAT(ec.nombre, ' ', ec.apellido)                  AS cajero,
+         CONCAT(er.nombre, ' ', er.apellido)                  AS repartidor,
          v.subtotal,
-         COALESCE(v.descuento_monto, 0)                      AS descuento_monto,
+         COALESCE(v.descuento_monto, 0)                       AS descuento_monto,
          v.total
-       FROM pago p
-       JOIN venta v ON p.id_venta = v.id_venta
-       LEFT JOIN cliente c ON v.id_cliente = c.id_cliente
-       LEFT JOIN empleado ec ON p.id_cajero = ec.id_empleado
-       LEFT JOIN empleado er ON p.id_repartidor = er.id_empleado
-       WHERE p.id_pago = $1`,
-      [id_pago],
+       FROM cobro c
+       JOIN venta        v  ON c.id_venta        = v.id_venta
+       JOIN metodo_cobro mc ON c.id_metodo_cobro = mc.id_metodo_cobro
+       LEFT JOIN cliente  cl ON v.id_cliente     = cl.id_cliente
+       LEFT JOIN empleado ec ON c.id_cajero      = ec.id_empleado
+       LEFT JOIN empleado er ON c.id_repartidor  = er.id_empleado
+       WHERE c.id_cobro = $1`,
+      [id_cobro],
     );
 
-    if (pagoRes.rows.length === 0) throw new Error("Pago no encontrado.");
-    const pago = pagoRes.rows[0];
+    if (cobroRes.rows.length === 0) throw new Error("Cobro no encontrado.");
+    const cobro = cobroRes.rows[0];
 
     const detallesRes = await this.pool.query(
       `SELECT
@@ -238,20 +281,20 @@ export class EntregaService {
     );
 
     return {
-      id_pago: pago.id_pago,
-      id_venta: pago.id_venta,
-      fecha_pago: pago.fecha_pago,
-      metodo_pago: pago.metodo_pago,
-      monto: Number(pago.monto),
-      referencia: pago.referencia,
-      cliente: pago.cliente,
-      nit: pago.nit,
-      direccion_cliente: pago.direccion_cliente,
-      cajero: pago.cajero,
-      repartidor: pago.repartidor?.trim() || null,
-      subtotal: Number(pago.subtotal ?? pago.total),
-      descuento_monto: Number(pago.descuento_monto),
-      total: Number(pago.total),
+      id_pago: cobro.id_pago,
+      id_venta: cobro.id_venta,
+      fecha_pago: cobro.fecha_pago,
+      metodo_pago: cobro.metodo_pago,
+      monto: Number(cobro.monto),
+      referencia: cobro.referencia,
+      cliente: cobro.cliente,
+      nit: cobro.nit,
+      direccion_cliente: cobro.direccion_cliente,
+      cajero: cobro.cajero,
+      repartidor: cobro.repartidor?.trim() || null,
+      subtotal: Number(cobro.subtotal ?? cobro.total),
+      descuento_monto: Number(cobro.descuento_monto),
+      total: Number(cobro.total),
       detalles: detallesRes.rows.map((d) => ({
         id_producto: d.id_producto,
         producto: d.producto,
@@ -264,6 +307,7 @@ export class EntregaService {
     };
   }
 
+  // ── Historial de entregas del repartidor ──────────────────────────────────
   async obtenerMiHistorial(
     id_repartidor: number,
     desde: string,
@@ -273,27 +317,28 @@ export class EntregaService {
       SELECT
         pd.id_pedido,
         pd.id_venta,
-        pd.estado                              AS estado_pedido,
-        d.direccion_texto                      AS direccion_entrega,
-        d.nombre                               AS nombre_contacto,
-        d.telefono                             AS telefono_contacto,
+        ep.nombre                             AS estado_pedido,
+        d.direccion_texto                     AS direccion_entrega,
+        d.nombre                              AS nombre_contacto,
+        d.telefono                            AS telefono_contacto,
         pd.fecha_entrega,
         pd.motivo_fallido,
         pd.monto_cobrado_contra_entrega,
         v.total,
         v.pago_contra_entrega,
-        (SELECT pg.id_pago
-         FROM pago pg
-         WHERE pg.id_venta = v.id_venta
-           AND pg.id_repartidor = $1
-         LIMIT 1)                              AS id_pago
+        (SELECT c.id_cobro
+         FROM cobro c
+         WHERE c.id_venta      = v.id_venta
+           AND c.id_repartidor = $1
+         LIMIT 1)                             AS id_pago
       FROM pedido_domicilio pd
-      JOIN venta        v  ON pd.id_venta        = v.id_venta
-      JOIN destinatario d  ON pd.id_destinatario = d.id_destinatario
+      JOIN venta         v  ON pd.id_venta        = v.id_venta
+      JOIN destinatario  d  ON pd.id_destinatario = d.id_destinatario
+      JOIN estado_pedido ep ON pd.id_estado_pedido = ep.id_estado_pedido
       WHERE pd.id_repartidor = $1
-        AND pd.estado IN ('entregado', 'fallido')
+        AND ep.nombre IN ('entregado', 'fallido')
         AND DATE(pd.fecha_entrega) BETWEEN $2 AND $3
-      ORDER BY pd.fecha_entrega DESC;
+      ORDER BY pd.fecha_entrega DESC
     `;
 
     const result = await this.pool.query(query, [id_repartidor, desde, hasta]);
@@ -312,7 +357,7 @@ export class EntregaService {
         : null,
       total: Number(row.total),
       pago_contra_entrega: row.pago_contra_entrega,
-      id_pago: row.id_pago ?? null,
+      id_pago: row.id_pago ?? null, // id_cobro aliasado
     }));
 
     const totalEntregados = entregas.filter(

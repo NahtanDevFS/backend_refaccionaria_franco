@@ -4,7 +4,6 @@ import { Pool } from "pg";
 import { AdminService } from "../services/AdminService";
 import { AdminController } from "../controllers/AdminController";
 
-//Middleware: solo administrador puede acceder
 function soloAdmin(req: Request, res: Response, next: NextFunction): void {
   if (req.usuario?.rol !== "ADMINISTRADOR") {
     res.status(403).json({
@@ -21,19 +20,19 @@ export function crearAdminRouter(dbPool: Pool): Router {
   const service = new AdminService(dbPool);
   const controller = new AdminController(service);
 
-  // Todas las rutas de este router requieren ser ADMINISTRADOR
   router.use(soloAdmin);
 
-  // Catálogos de apoyo (sucursales, puestos, roles)
+  // Catálogos (sucursales, roles, tipos_cliente)
+  // MIGRACIÓN: puestos eliminado del catálogo
   router.get("/catalogos", controller.obtenerCatalogos);
 
   // Empleados
   router.get("/empleados", controller.listarEmpleados);
   router.post("/empleados", controller.crearEmpleado);
 
-  // Salarios
-  router.get("/empleados/:id/salario", controller.obtenerHistorialSalario);
-  router.post("/empleados/:id/salario", controller.actualizarSalario);
+  // MIGRACIÓN: rutas de salario eliminadas
+  // /admin/empleados/:id/salario GET  → historial_salario no existe en v2
+  // /admin/empleados/:id/salario POST → historial_salario no existe en v2
 
   return router;
 }

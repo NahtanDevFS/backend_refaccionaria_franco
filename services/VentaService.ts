@@ -5,7 +5,6 @@ import { CrearVentaDTO } from "../dtos/CrearVentaDTO";
 export class VentaService {
   constructor(private readonly pool: Pool) {}
 
-  //Helper: resuelve el id_canal a partir del nombre (mostrador/domicilio)
   private async resolverIdCanal(
     client: { query: Function },
     nombreCanal: string,
@@ -22,10 +21,12 @@ export class VentaService {
   async obtenerVentas(filtros?: any): Promise<{ data: any[]; total: number }> {
     let baseQuery = `
       FROM venta v
-      LEFT JOIN canal_venta  cv ON v.id_canal    = cv.id_canal
-      LEFT JOIN cliente    c ON v.id_cliente  = c.id_cliente
-      LEFT JOIN empleado   e ON v.id_vendedor = e.id_empleado
-      LEFT JOIN pedido_domicilio pd ON pd.id_venta = v.id_venta
+      JOIN  estado_venta       ev ON v.id_estado_venta   = ev.id_estado_venta
+      LEFT JOIN canal_venta    cv ON v.id_canal           = cv.id_canal
+      LEFT JOIN cliente         c ON v.id_cliente         = c.id_cliente
+      LEFT JOIN empleado        e ON v.id_vendedor        = e.id_empleado
+      LEFT JOIN pedido_domicilio pd ON pd.id_venta        = v.id_venta
+      LEFT JOIN estado_pedido   ep ON pd.id_estado_pedido = ep.id_estado_pedido
       WHERE 1=1
     `;
 
@@ -37,7 +38,6 @@ export class VentaService {
       values.push(Number(filtros.id_sucursal));
       paramIndex++;
     }
-
     if (filtros?.id_venta) {
       baseQuery += ` AND v.id_venta = $${paramIndex}`;
       values.push(Number(filtros.id_venta));
@@ -59,66 +59,55 @@ export class VentaService {
         paramIndex++;
       }
       if (filtros?.estado) {
-        baseQuery += ` AND v.estado = $${paramIndex}`;
+        baseQuery += ` AND ev.nombre = $${paramIndex}`;
         values.push(filtros.estado);
         paramIndex++;
       }
     }
 
-    const countQuery = `SELECT COUNT(*) as total ` + baseQuery;
-
     const page = filtros?.page ? Number(filtros.page) : 1;
     const limit = filtros?.limit ? Number(filtros.limit) : 20;
     const offset = (page - 1) * limit;
 
-    let dataQuery =
-      `SELECT
-        v.id_venta,
-        v.created_at  AS fecha,
-        COALESCE(c.nombre_razon_social, 'Consumidor Final')   AS cliente,
-        CONCAT(e.nombre, ' ', e.apellido)    AS vendedor,
-        cv.nombre             AS canal,
-        v.subtotal,
-        v.descuento_monto  AS descuento,
-        v.monto_iva,
-        v.total,
-        v.estado,
-        pd.estado AS estado_pedido,
-        pd.motivo_fallido
-      ` + baseQuery;
-
-    dataQuery += ` ORDER BY v.created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1};`;
-    const dataValues = [...values, limit, offset];
+    const selectQuery = `SELECT v.id_venta, v.created_at AS fecha,
+        COALESCE(c.nombre_razon_social,'Consumidor Final') AS cliente,
+        CONCAT(e.nombre,' ',e.apellido) AS vendedor, cv.nombre AS canal,
+        v.subtotal, v.descuento_monto AS descuento, v.monto_iva, v.total,
+        ev.nombre AS estado, ep.nombre AS estado_pedido, pd.motivo_fallido `;
 
     const [countResult, dataResult] = await Promise.all([
-      this.pool.query(countQuery, values),
-      this.pool.query(dataQuery, dataValues),
+      this.pool.query(`SELECT COUNT(*) AS total ` + baseQuery, values),
+      this.pool.query(
+        selectQuery +
+          baseQuery +
+          ` ORDER BY v.created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+        [...values, limit, offset],
+      ),
     ]);
 
-    const total = Number(countResult.rows[0].total);
-    const data = dataResult.rows.map((row) => ({
-      ...row,
-      subtotal: Number(row.subtotal),
-      descuento: Number(row.descuento),
-      monto_iva: Number(row.monto_iva),
-      total: Number(row.total),
-      estado_pedido: row.estado_pedido ?? null,
-      motivo_fallido: row.motivo_fallido ?? null,
-    }));
-
-    return { data, total };
+    return {
+      total: Number(countResult.rows[0].total),
+      data: dataResult.rows.map((row) => ({
+        ...row,
+        subtotal: Number(row.subtotal),
+        descuento: Number(row.descuento),
+        monto_iva: Number(row.monto_iva),
+        total: Number(row.total),
+        estado_pedido: row.estado_pedido ?? null,
+        motivo_fallido: row.motivo_fallido ?? null,
+      })),
+    };
   }
 
   async obtenerVendedores(id_sucursal: number): Promise<any[]> {
-    const query = `
-      SELECT e.id_empleado, e.nombre, e.apellido
-      FROM empleado e
-      INNER JOIN puesto p ON e.id_puesto = p.id_puesto
-      WHERE e.id_sucursal = $1
-        AND p.nombre ILIKE '%vendedor%'
-        AND e.activo = true;
-    `;
-    const result = await this.pool.query(query, [id_sucursal]);
+    const result = await this.pool.query(
+      `SELECT e.id_empleado, e.nombre, e.apellido
+       FROM empleado e
+       INNER JOIN usuario u ON u.id_empleado = e.id_empleado
+       INNER JOIN rol     r ON u.id_rol      = r.id_rol
+       WHERE e.id_sucursal = $1 AND r.nombre = 'VENDEDOR' AND e.activo = true`,
+      [id_sucursal],
+    );
     return result.rows;
   }
 
@@ -127,14 +116,10 @@ export class VentaService {
     id_usuario: number,
   ): Promise<number> {
     const client = await this.pool.connect();
-
     try {
       await client.query("BEGIN");
 
-      // ── Resolver canal ──────────────────────────────────────────────────────
       const id_canal = await this.resolverIdCanal(client, data.canal);
-
-      // ── Resolver cliente ────────────────────────────────────────────────────
       let id_cliente = null;
 
       if (data.nit !== "CF") {
@@ -146,27 +131,20 @@ export class VentaService {
           id_cliente = clienteRes.rows[0].id_cliente;
         } else if (data.cliente_nuevo) {
           const tipoRes = await client.query(
-            `SELECT id_tipo_cliente FROM tipo_cliente
-             WHERE LOWER(nombre) = LOWER($1) AND activo = true
-             LIMIT 1`,
+            `SELECT id_tipo_cliente FROM tipo_cliente WHERE LOWER(nombre) = LOWER($1) AND activo = true LIMIT 1`,
             [data.cliente_nuevo.tipo_cliente ?? "particular"],
           );
+          const id_tipo_cliente =
+            tipoRes.rows.length > 0
+              ? tipoRes.rows[0].id_tipo_cliente
+              : (
+                  await client.query(
+                    `SELECT id_tipo_cliente FROM tipo_cliente WHERE nombre = 'particular' LIMIT 1`,
+                  )
+                ).rows[0].id_tipo_cliente;
 
-          let id_tipo_cliente: number;
-          if (tipoRes.rows.length > 0) {
-            id_tipo_cliente = tipoRes.rows[0].id_tipo_cliente;
-          } else {
-            const fallbackRes = await client.query(
-              `SELECT id_tipo_cliente FROM tipo_cliente
-               WHERE nombre = 'particular' LIMIT 1`,
-            );
-            id_tipo_cliente = fallbackRes.rows[0].id_tipo_cliente;
-          }
-
-          const insertCliente = await client.query(
-            `INSERT INTO cliente
-               (nombre_razon_social, nit, id_tipo_cliente, telefono, email,
-                direccion, id_municipio, notas_internas)
+          const ins = await client.query(
+            `INSERT INTO cliente (nombre_razon_social,nit,id_tipo_cliente,telefono,email,direccion,id_municipio,notas_internas)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id_cliente`,
             [
               data.cliente_nuevo.nombre_razon_social,
@@ -179,14 +157,12 @@ export class VentaService {
               data.cliente_nuevo.notas_internas,
             ],
           );
-          id_cliente = insertCliente.rows[0].id_cliente;
+          id_cliente = ins.rows[0].id_cliente;
         }
       }
 
-      // ── Validar stock y calcular precios ────────────────────────────────────
       const pctDescuento = data.descuento_porcentaje ?? 0;
       const esContraEntrega = data.pago_contra_entrega ?? false;
-
       const estadoVenta =
         pctDescuento > 5 ? "pendiente_autorizacion" : "pendiente_pago";
 
@@ -195,23 +171,18 @@ export class VentaService {
         id_producto_reacondicionado?: number;
         cantidad: number;
         precioUnitario: number;
-        id_producto_sucursal?: number;
+        id_reorden?: number;
         esReacondicionado: boolean;
       }[] = [];
 
       for (const det of data.detalles) {
         if (det.id_producto_reacondicionado) {
           const loteRes = await client.query(
-            `SELECT lr.precio_venta_reac, lr.cantidad
-             FROM lote_reacondicionado lr
-             WHERE lr.id_lote = $1
-               AND lr.id_sucursal = $2
-               AND lr.activo = true
-               AND lr.cantidad > 0
-             FOR UPDATE`,
+            `SELECT lr.precio_venta_reac, lr.cantidad FROM lote_reacondicionado lr
+             WHERE lr.id_lote=$1 AND lr.id_sucursal=$2 AND lr.activo=true AND lr.cantidad>0 FOR UPDATE`,
             [det.id_producto_reacondicionado, data.id_sucursal],
           );
-          if (loteRes.rows.length === 0)
+          if (!loteRes.rows.length)
             throw new Error(
               `Lote reacondicionado ${det.id_producto_reacondicionado} no disponible`,
             );
@@ -219,7 +190,6 @@ export class VentaService {
             throw new Error(
               `Stock insuficiente en lote reacondicionado ${det.id_producto_reacondicionado}`,
             );
-
           detallesCalculados.push({
             id_producto: det.id_producto,
             id_producto_reacondicionado: det.id_producto_reacondicionado,
@@ -228,36 +198,25 @@ export class VentaService {
             esReacondicionado: true,
           });
         } else {
-          //Primero bloquea la fila, luego calcula el stock por separado
-          const psRes = await client.query(
-            `SELECT ps.id_producto_sucursal, p.precio_venta
-             FROM producto_sucursal ps
-             JOIN producto p ON ps.id_producto = p.id_producto
-             WHERE ps.id_producto = $1
-               AND ps.id_sucursal = $2
-               AND ps.activo = TRUE
-             FOR UPDATE OF ps`,
+          // reorden_producto_sucursal reemplaza producto_sucursal
+          const rpsRes = await client.query(
+            `SELECT rps.id_reorden, p.precio_venta
+             FROM reorden_producto_sucursal rps
+             JOIN producto p ON rps.id_producto = p.id_producto
+             WHERE rps.id_producto=$1 AND rps.id_sucursal=$2 AND rps.activo=TRUE FOR UPDATE OF rps`,
             [det.id_producto, data.id_sucursal],
           );
-
-          if (psRes.rows.length === 0)
+          if (!rpsRes.rows.length)
             throw new Error(
               `Producto ${det.id_producto} sin inventario en esta sucursal`,
             );
 
           const stockRes = await client.query(
-            `SELECT COALESCE(SUM(cantidad_actual), 0) AS cantidad_actual
-             FROM lote_detalle
-             WHERE id_producto = $1
-               AND id_sucursal = $2
-               AND agotado = FALSE
-               AND activo  = TRUE`,
+            `SELECT COALESCE(SUM(cantidad_actual),0) AS cantidad_actual FROM lote_detalle
+             WHERE id_producto=$1 AND id_sucursal=$2 AND agotado=FALSE AND activo=TRUE`,
             [det.id_producto, data.id_sucursal],
           );
-
-          const cantidad_actual = Number(stockRes.rows[0].cantidad_actual);
-
-          if (cantidad_actual < det.cantidad)
+          if (Number(stockRes.rows[0].cantidad_actual) < det.cantidad)
             throw new Error(
               `Stock insuficiente para producto ${det.id_producto}`,
             );
@@ -265,19 +224,17 @@ export class VentaService {
           detallesCalculados.push({
             id_producto: det.id_producto,
             cantidad: det.cantidad,
-            precioUnitario: Number(psRes.rows[0].precio_venta),
-            id_producto_sucursal: psRes.rows[0].id_producto_sucursal,
+            precioUnitario: Number(rpsRes.rows[0].precio_venta),
+            id_reorden: rpsRes.rows[0].id_reorden,
             esReacondicionado: false,
           });
         }
       }
 
-      //Insertar venta
       const ventaRes = await client.query(
-        `INSERT INTO venta
-           (id_sucursal, id_vendedor, id_cliente, id_canal, pago_contra_entrega,
-            estado, subtotal, descuento_monto, monto_iva, total)
-         VALUES ($1,$2,$3,$4,$5,$6, 0,$7, 0, 0)
+        `INSERT INTO venta (id_sucursal,id_vendedor,id_cliente,id_canal,pago_contra_entrega,
+           id_estado_venta,subtotal,descuento_monto,monto_iva,total)
+         VALUES ($1,$2,$3,$4,$5,(SELECT id_estado_venta FROM estado_venta WHERE nombre=$6),0,$7,0,0)
          RETURNING id_venta`,
         [
           data.id_sucursal,
@@ -289,16 +246,12 @@ export class VentaService {
           0,
         ],
       );
-
       const id_venta = ventaRes.rows[0].id_venta;
 
-      //Insertar detalles (trigger recalcula subtotal/total de venta)
       for (const det of detallesCalculados) {
         await client.query(
-          `INSERT INTO detalle_venta
-             (id_venta, id_producto, id_producto_reacondicionado,
-              cantidad, precio_unitario, porcentaje_iva)
-           VALUES ($1,$2,$3,$4,$5, 12.00)`,
+          `INSERT INTO detalle_venta (id_venta,id_producto,id_producto_reacondicionado,cantidad,precio_unitario,porcentaje_iva)
+           VALUES ($1,$2,$3,$4,$5,12.00)`,
           [
             id_venta,
             det.id_producto,
@@ -309,79 +262,57 @@ export class VentaService {
         );
       }
 
-      //Aplicar descuento sobre el subtotal ya calculado por el trigger
       if (pctDescuento > 0) {
         await client.query(
-          `UPDATE venta
-           SET descuento_monto = ROUND(subtotal * $1 / 100, 2),
-               total           = ROUND(subtotal * (1 - $1 / 100), 2)
-           WHERE id_venta = $2`,
+          `UPDATE venta SET descuento_monto=ROUND(subtotal*$1/100,2), total=ROUND(subtotal*(1-$1/100),2) WHERE id_venta=$2`,
           [pctDescuento, id_venta],
         );
       }
 
-      //FIFO: registrar movimiento y consumir lotes para productos normales
       for (const det of detallesCalculados) {
         if (det.esReacondicionado) continue;
 
         const stockRes = await client.query(
-          `SELECT COALESCE(SUM(cantidad_actual), 0) AS cantidad_actual
-           FROM lote_detalle
-           WHERE id_producto = $1
-             AND id_sucursal = $2
-             AND agotado = FALSE
-             AND activo  = TRUE`,
+          `SELECT COALESCE(SUM(cantidad_actual),0) AS cantidad_actual FROM lote_detalle
+           WHERE id_producto=$1 AND id_sucursal=$2 AND agotado=FALSE AND activo=TRUE`,
           [det.id_producto, data.id_sucursal],
         );
 
-        //cantidad_resultante = stock antes de consumir - lo que se vende
-        const cantidadResultante =
-          Number(stockRes.rows[0].cantidad_actual) - det.cantidad;
-
+        // id_reorden reemplaza id_producto_sucursal
+        // id_tipo_movimiento (FK) reemplaza tipo (VARCHAR)
         const movRes = await client.query(
           `INSERT INTO movimiento_inventario
-             (id_producto_sucursal, id_usuario, tipo, cantidad, cantidad_resultante,
-              id_referencia, tabla_referencia, motivo)
-           VALUES ($1, $2, 'salida_venta', $3, $4, $5, 'venta',
-                   'Venta registrada en mostrador o domicilio')
+             (id_reorden,id_usuario,id_tipo_movimiento,cantidad,cantidad_resultante,id_referencia,tabla_referencia,motivo)
+           VALUES ($1,$2,(SELECT id_tipo_movimiento FROM tipo_movimiento_inventario WHERE nombre='salida_venta'),$3,$4,$5,'venta','Venta registrada en mostrador o domicilio')
            RETURNING id_movimiento`,
           [
-            det.id_producto_sucursal,
+            det.id_reorden,
             id_usuario,
             det.cantidad,
-            cantidadResultante,
+            Number(stockRes.rows[0].cantidad_actual) - det.cantidad,
             id_venta,
           ],
         );
 
-        const id_movimiento = movRes.rows[0].id_movimiento;
-
-        await client.query(`SELECT fn_consumir_lotes_fifo($1, $2, $3, $4)`, [
+        await client.query(`SELECT fn_consumir_lotes_fifo($1,$2,$3,$4)`, [
           det.id_producto,
           data.id_sucursal,
           det.cantidad,
-          id_movimiento,
+          movRes.rows[0].id_movimiento,
         ]);
       }
 
-      //Descontar lotes reacondicionados
       for (const det of detallesCalculados) {
         if (!det.esReacondicionado) continue;
         await client.query(
-          `UPDATE lote_reacondicionado
-           SET cantidad = cantidad - $1
-           WHERE id_lote = $2`,
+          `UPDATE lote_reacondicionado SET cantidad=cantidad-$1 WHERE id_lote=$2`,
           [det.cantidad, det.id_producto_reacondicionado],
         );
       }
 
-      //Pedido a domicilio
       if (data.canal === "domicilio" && data.direccion_entrega) {
         const destRes = await client.query(
-          `INSERT INTO destinatario
-             (nombre, telefono, direccion_texto, id_municipio)
-           VALUES ($1,$2,$3,$4)
-           RETURNING id_destinatario`,
+          `INSERT INTO destinatario (nombre,telefono,direccion_texto,id_municipio) VALUES ($1,$2,$3,$4) RETURNING id_destinatario`,
           [
             data.nombre_contacto ?? null,
             data.telefono_contacto ?? null,
@@ -389,11 +320,9 @@ export class VentaService {
             data.id_municipio_entrega ?? null,
           ],
         );
-
         await client.query(
-          `INSERT INTO pedido_domicilio
-             (id_venta, id_repartidor, estado, id_destinatario)
-           VALUES ($1,$2,'pendiente',$3)`,
+          `INSERT INTO pedido_domicilio (id_venta,id_repartidor,id_estado_pedido,id_destinatario)
+           VALUES ($1,$2,(SELECT id_estado_pedido FROM estado_pedido WHERE nombre='pendiente'),$3)`,
           [id_venta, data.id_repartidor, destRes.rows[0].id_destinatario],
         );
       }
@@ -408,38 +337,19 @@ export class VentaService {
     }
   }
 
-  async obtenerRepartidores(id_sucursal: number): Promise<
-    {
-      id_empleado: number;
-      nombre: string;
-      apellido: string;
-      disponible: boolean;
-      pedidos_activos: number;
-    }[]
-  > {
-    const query = `
-      SELECT
-        e.id_empleado,
-        e.nombre,
-        e.apellido,
-        e.disponible,
-        COALESCE(
-          (
-            SELECT COUNT(*)::int
-            FROM pedido_domicilio pd
-            WHERE pd.id_repartidor = e.id_empleado
-              AND pd.estado = 'pendiente'
-          ),
-          0
-        ) AS pedidos_activos
-      FROM empleado e
-      INNER JOIN puesto p ON e.id_puesto = p.id_puesto
-      WHERE e.id_sucursal = $1
-        AND p.nombre ILIKE '%repartidor%'
-        AND e.activo = true
-      ORDER BY e.disponible DESC, pedidos_activos ASC, e.nombre ASC;
-    `;
-    const result = await this.pool.query(query, [id_sucursal]);
+  async obtenerRepartidores(id_sucursal: number) {
+    const result = await this.pool.query(
+      `SELECT e.id_empleado, e.nombre, e.apellido, e.disponible,
+         COALESCE((SELECT COUNT(*)::int FROM pedido_domicilio pd
+           JOIN estado_pedido ep ON pd.id_estado_pedido=ep.id_estado_pedido
+           WHERE pd.id_repartidor=e.id_empleado AND ep.nombre='pendiente'),0) AS pedidos_activos
+       FROM empleado e
+       INNER JOIN usuario u ON u.id_empleado=e.id_empleado
+       INNER JOIN rol r ON u.id_rol=r.id_rol
+       WHERE e.id_sucursal=$1 AND r.nombre='REPARTIDOR' AND e.activo=true
+       ORDER BY e.disponible DESC, pedidos_activos ASC, e.nombre ASC`,
+      [id_sucursal],
+    );
     return result.rows.map((r) => ({
       id_empleado: r.id_empleado,
       nombre: r.nombre,
@@ -450,24 +360,20 @@ export class VentaService {
   }
 
   async obtenerPendientesAutorizacion(id_sucursal: number): Promise<any[]> {
-    const query = `
-      SELECT
-        v.id_venta,
-        v.created_at                                                AS fecha,
-        COALESCE(c.nombre_razon_social, 'Consumidor Final')         AS cliente,
-        COALESCE(CONCAT(e.nombre, ' ', e.apellido), 'Sin vendedor') AS vendedor,
-        v.subtotal,
-        v.descuento_monto,
-        v.total,
-        ROUND((v.descuento_monto / NULLIF(v.subtotal, 0)) * 100, 2) AS pct_descuento
-      FROM venta v
-      LEFT JOIN cliente  c ON v.id_cliente  = c.id_cliente
-      LEFT JOIN empleado e ON v.id_vendedor = e.id_empleado
-      WHERE v.id_sucursal = $1
-        AND v.estado = 'pendiente_autorizacion'
-      ORDER BY v.created_at ASC;
-    `;
-    const result = await this.pool.query(query, [id_sucursal]);
+    const result = await this.pool.query(
+      `SELECT v.id_venta, v.created_at AS fecha,
+         COALESCE(c.nombre_razon_social,'Consumidor Final') AS cliente,
+         COALESCE(CONCAT(e.nombre,' ',e.apellido),'Sin vendedor') AS vendedor,
+         v.subtotal, v.descuento_monto, v.total,
+         ROUND((v.descuento_monto/NULLIF(v.subtotal,0))*100,2) AS pct_descuento
+       FROM venta v
+       JOIN estado_venta ev ON v.id_estado_venta=ev.id_estado_venta
+       LEFT JOIN cliente c ON v.id_cliente=c.id_cliente
+       LEFT JOIN empleado e ON v.id_vendedor=e.id_empleado
+       WHERE v.id_sucursal=$1 AND ev.nombre='pendiente_autorizacion'
+       ORDER BY v.created_at ASC`,
+      [id_sucursal],
+    );
     return result.rows.map((row) => ({
       ...row,
       subtotal: Number(row.subtotal),
@@ -488,15 +394,14 @@ export class VentaService {
       await client.query("BEGIN");
 
       const ventaRes = await client.query(
-        `SELECT v.estado, cv.nombre AS canal, v.pago_contra_entrega,
-              v.id_sucursal, v.subtotal
-       FROM venta v
-       JOIN canal_venta cv ON v.id_canal = cv.id_canal
-       WHERE v.id_venta = $1 FOR UPDATE`,
+        `SELECT ev.nombre AS estado, cv.nombre AS canal, v.pago_contra_entrega, v.id_sucursal, v.subtotal
+         FROM venta v
+         JOIN estado_venta ev ON v.id_estado_venta=ev.id_estado_venta
+         JOIN canal_venta  cv ON v.id_canal=cv.id_canal
+         WHERE v.id_venta=$1 FOR UPDATE`,
         [id_venta],
       );
-      if (ventaRes.rows.length === 0) throw new Error("Venta no encontrada");
-
+      if (!ventaRes.rows.length) throw new Error("Venta no encontrada");
       const venta = ventaRes.rows[0];
       if (venta.estado !== "pendiente_autorizacion")
         throw new Error("La venta no está pendiente de autorización");
@@ -506,23 +411,14 @@ export class VentaService {
           ? "pendiente_cobro_contra_entrega"
           : "pendiente_pago";
 
-      let nuevoDescuento: number | null = null;
-      let nuevoTotal: number | null = null;
-
       if (!aprobado) {
-        nuevoDescuento = Number((Number(venta.subtotal) * 0.05).toFixed(2));
-        nuevoTotal = Number((Number(venta.subtotal) * 0.95).toFixed(2));
-      }
-
-      if (!aprobado && nuevoDescuento !== null) {
+        const nuevoDescuento = Number(
+          (Number(venta.subtotal) * 0.05).toFixed(2),
+        );
+        const nuevoTotal = Number((Number(venta.subtotal) * 0.95).toFixed(2));
         await client.query(
-          `UPDATE venta
-         SET estado    = $1,
-             id_supervisor_autoriza = $2,
-             descuento_monto    = $3,
-             total = $4,
-             updated_by  = $5
-         WHERE id_venta = $6`,
+          `UPDATE venta SET id_estado_venta=(SELECT id_estado_venta FROM estado_venta WHERE nombre=$1),
+             id_supervisor_autoriza=$2, descuento_monto=$3, total=$4, updated_by=$5 WHERE id_venta=$6`,
           [
             estadoDestino,
             id_supervisor,
@@ -534,34 +430,12 @@ export class VentaService {
         );
       } else {
         await client.query(
-          `UPDATE venta
-         SET estado = $1,
-             id_supervisor_autoriza = $2,
-             updated_by  = $3
-         WHERE id_venta = $4`,
+          `UPDATE venta SET id_estado_venta=(SELECT id_estado_venta FROM estado_venta WHERE nombre=$1),
+             id_supervisor_autoriza=$2, updated_by=$3 WHERE id_venta=$4`,
           [estadoDestino, id_supervisor, id_usuario_log, id_venta],
         );
       }
-
-      await client.query(
-        `INSERT INTO log_auditoria
-         (id_usuario, tabla_afectada, accion, id_registro, datos_nuevos)
-       VALUES ($1, 'venta', $2, $3, $4)`,
-        [
-          id_usuario_log,
-          aprobado ? "aprobacion_descuento" : "rechazo_con_descuento_base",
-          id_venta,
-          JSON.stringify({
-            estado: estadoDestino,
-            id_supervisor_autoriza: id_supervisor,
-            descuento_aplicado: nuevoDescuento,
-            total_resultante: nuevoTotal,
-            motivo: aprobado
-              ? "Descuento aprobado por supervisor"
-              : "Descuento solicitado rechazado — se aplica 5% base automáticamente",
-          }),
-        ],
-      );
+      // log_auditoria eliminado en BD v2
 
       await client.query("COMMIT");
     } catch (error) {
@@ -575,59 +449,55 @@ export class VentaService {
   async obtenerVentaPorId(
     id_venta: number,
   ): Promise<{ venta: any; detalles: any[] } | null> {
-    const queryVenta = `
-      SELECT
-        v.id_venta, v.id_sucursal, v.id_vendedor, v.id_cliente,
-        v.id_supervisor_autoriza, v.estado, v.subtotal, v.descuento_monto,
-        v.total, v.created_at, v.updated_at, v.pago_contra_entrega,
-        v.monto_iva, v.created_by, v.updated_by, v.id_anulado_por,
-        v.motivo_anulacion, v.monto_devolucion,
-        cv.nombre                                            AS canal,
-        COALESCE(c.nombre_razon_social, 'Consumidor Final') AS cliente,
-        CONCAT(ev.nombre, ' ', ev.apellido)                  AS vendedor,
-        CONCAT(ea.nombre, ' ', ea.apellido)                  AS anulado_por,
-        pd.id_pedido,
-        pd.estado        AS estado_pedido,
-        pd.motivo_fallido,
-        pd.id_repartidor        AS id_repartidor_actual,
-        CONCAT(er.nombre, ' ', er.apellido)     AS repartidor_actual
-      FROM venta v
-      JOIN canal_venta   cv ON v.id_canal   = cv.id_canal
-      LEFT JOIN cliente   c ON v.id_cliente  = c.id_cliente
-      LEFT JOIN empleado ev ON v.id_vendedor  = ev.id_empleado
-      LEFT JOIN empleado ea ON v.id_anulado_por = ea.id_empleado
-      LEFT JOIN pedido_domicilio pd ON pd.id_venta = v.id_venta
-      LEFT JOIN empleado er ON pd.id_repartidor = er.id_empleado
-      WHERE v.id_venta = $1;
-    `;
+    const resVenta = await this.pool.query(
+      `SELECT v.id_venta, v.id_sucursal, v.id_vendedor, v.id_cliente,
+         v.id_supervisor_autoriza, v.subtotal, v.descuento_monto, v.total,
+         v.created_at, v.updated_at, v.pago_contra_entrega, v.monto_iva,
+         v.created_by, v.updated_by, v.id_anulado_por, v.motivo_anulacion, v.monto_devolucion,
+         cv.nombre AS canal, ev.nombre AS estado,
+         COALESCE(c.nombre_razon_social,'Consumidor Final') AS cliente,
+         CONCAT(evnd.nombre,' ',evnd.apellido) AS vendedor,
+         CONCAT(ean.nombre,' ',ean.apellido)   AS anulado_por,
+         pd.id_pedido, ep.nombre AS estado_pedido, pd.motivo_fallido,
+         pd.id_repartidor AS id_repartidor_actual,
+         CONCAT(er.nombre,' ',er.apellido) AS repartidor_actual
+       FROM venta v
+       JOIN  canal_venta   cv ON v.id_canal        = cv.id_canal
+       JOIN  estado_venta  ev ON v.id_estado_venta = ev.id_estado_venta
+       LEFT JOIN cliente    c ON v.id_cliente      = c.id_cliente
+       LEFT JOIN empleado evnd ON v.id_vendedor    = evnd.id_empleado
+       LEFT JOIN empleado ean  ON v.id_anulado_por = ean.id_empleado
+       LEFT JOIN pedido_domicilio pd ON pd.id_venta         = v.id_venta
+       LEFT JOIN estado_pedido    ep ON pd.id_estado_pedido = ep.id_estado_pedido
+       LEFT JOIN empleado         er ON pd.id_repartidor   = er.id_empleado
+       WHERE v.id_venta=$1`,
+      [id_venta],
+    );
+    if (!resVenta.rows.length) return null;
 
-    const queryDetalles = `
-      SELECT dv.id_detalle, dv.id_producto, p.nombre AS producto, p.sku, p.garantia_dias,
-             dv.cantidad, dv.precio_unitario, dv.subtotal_linea, dv.monto_iva,
-             EXISTS (
-               SELECT 1 FROM garantia g
-               WHERE g.id_detalle_venta = dv.id_detalle
-                 AND g.estado IN ('en_revision', 'aprobada', 'rechazada')
-             ) AS tiene_garantia
-      FROM detalle_venta dv
-      JOIN producto p ON dv.id_producto = p.id_producto
-      WHERE dv.id_venta = $1;
-    `;
+    const resDetalles = await this.pool.query(
+      `SELECT dv.id_detalle, dv.id_producto, p.nombre AS producto, p.sku,
+         p.garantia_dias, dv.cantidad, dv.precio_unitario, dv.subtotal_linea, dv.monto_iva,
+         EXISTS(SELECT 1 FROM garantia g
+           JOIN estado_garantia eg ON g.id_estado_garantia=eg.id_estado_garantia
+           WHERE g.id_detalle_venta=dv.id_detalle AND eg.nombre IN ('en_revision','aprobada','rechazada')
+         ) AS tiene_garantia
+       FROM detalle_venta dv
+       JOIN producto p ON dv.id_producto=p.id_producto
+       WHERE dv.id_venta=$1`,
+      [id_venta],
+    );
 
-    const resVenta = await this.pool.query(queryVenta, [id_venta]);
-    if (resVenta.rows.length === 0) return null;
-
-    const resDetalles = await this.pool.query(queryDetalles, [id_venta]);
     return {
       venta: resVenta.rows[0],
-      detalles: resDetalles.rows.map((row) => ({
-        ...row,
-        cantidad: Number(row.cantidad),
-        precio_unitario: Number(row.precio_unitario),
-        subtotal_linea: Number(row.subtotal_linea),
-        monto_iva: Number(row.monto_iva),
-        garantia_dias: Number(row.garantia_dias),
-        tiene_garantia: row.tiene_garantia === true,
+      detalles: resDetalles.rows.map((r) => ({
+        ...r,
+        cantidad: Number(r.cantidad),
+        precio_unitario: Number(r.precio_unitario),
+        subtotal_linea: Number(r.subtotal_linea),
+        monto_iva: Number(r.monto_iva),
+        garantia_dias: Number(r.garantia_dias),
+        tiene_garantia: r.tiene_garantia === true,
       })),
     };
   }
@@ -640,43 +510,31 @@ export class VentaService {
   ): Promise<any[]> {
     const fechaDesde = desde ?? new Date().toISOString().split("T")[0];
     const fechaHasta = hasta ?? new Date().toISOString().split("T")[0];
-
     const values: any[] = [id_sucursal, fechaDesde, fechaHasta];
     let filtroVendedor = "";
-
     if (id_vendedor) {
       values.push(id_vendedor);
-      filtroVendedor = `AND v.id_vendedor = $${values.length}`;
+      filtroVendedor = `AND v.id_vendedor=$${values.length}`;
     }
 
-    const query = `
-      SELECT
-        v.id_venta,
-        v.created_at  AS fecha,
-        v.estado,
-        v.subtotal,
-        v.descuento_monto,
-        v.total,
-        ROUND((v.descuento_monto / NULLIF(v.subtotal, 0)) * 100, 2) AS pct_descuento,
-        COALESCE(c.nombre_razon_social, 'Consumidor Final')    AS cliente,
-        COALESCE(CONCAT(ev.nombre, ' ', ev.apellido), 'Sin asignar') AS vendedor,
-        CASE
-          WHEN v.descuento_monto / NULLIF(v.subtotal, 0) > 0.05 THEN 'requirio_aprobacion'
-          ELSE 'automatico'
-        END     AS tipo_descuento,
-        COALESCE(CONCAT(es.nombre, ' ', es.apellido), NULL)      AS aprobado_por
-      FROM venta v
-      LEFT JOIN cliente  c  ON v.id_cliente = c.id_cliente
-      LEFT JOIN empleado ev ON v.id_vendedor  = ev.id_empleado
-      LEFT JOIN empleado es ON v.id_supervisor_autoriza = es.id_empleado
-      WHERE v.id_sucursal  = $1
-        AND v.descuento_monto > 0
-        AND DATE(v.created_at) BETWEEN $2 AND $3
-        ${filtroVendedor}
-      ORDER BY v.created_at DESC;
-    `;
-
-    const result = await this.pool.query(query, values);
+    const result = await this.pool.query(
+      `SELECT v.id_venta, v.created_at AS fecha, ev.nombre AS estado,
+         v.subtotal, v.descuento_monto, v.total,
+         ROUND((v.descuento_monto/NULLIF(v.subtotal,0))*100,2) AS pct_descuento,
+         COALESCE(c.nombre_razon_social,'Consumidor Final') AS cliente,
+         COALESCE(CONCAT(evnd.nombre,' ',evnd.apellido),'Sin asignar') AS vendedor,
+         CASE WHEN v.descuento_monto/NULLIF(v.subtotal,0)>0.05 THEN 'requirio_aprobacion' ELSE 'automatico' END AS tipo_descuento,
+         COALESCE(CONCAT(es.nombre,' ',es.apellido),NULL) AS aprobado_por
+       FROM venta v
+       JOIN  estado_venta   ev   ON v.id_estado_venta      = ev.id_estado_venta
+       LEFT JOIN cliente     c   ON v.id_cliente            = c.id_cliente
+       LEFT JOIN empleado evnd   ON v.id_vendedor           = evnd.id_empleado
+       LEFT JOIN empleado   es   ON v.id_supervisor_autoriza = es.id_empleado
+       WHERE v.id_sucursal=$1 AND v.descuento_monto>0
+         AND DATE(v.created_at) BETWEEN $2 AND $3 ${filtroVendedor}
+       ORDER BY v.created_at DESC`,
+      values,
+    );
 
     return result.rows.map((row) => ({
       id_venta: row.id_venta,

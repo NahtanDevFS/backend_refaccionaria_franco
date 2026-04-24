@@ -1,3 +1,4 @@
+// services/AuthService.ts
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { Pool } from "pg";
@@ -9,71 +10,54 @@ export class AuthService {
 
   constructor(private readonly pool: Pool) {}
 
+  // ─── Registro (ruta comentada en producción, mantenida para completitud) ──
   async registrar(dto: RegistrarUsuarioDTO) {
     const passwordHash = await bcrypt.hash(dto.password, this.SALT_ROUNDS);
-    const client = await this.pool.connect();
 
-    try {
-      await client.query("BEGIN");
+    // id_rol va directo en usuario — ya no existe tabla usuario_rol
+    const result = await this.pool.query(
+      `INSERT INTO usuario (id_empleado, username, password_hash, id_rol)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id_usuario, username`,
+      [dto.id_empleado, dto.username, passwordHash, dto.id_rol],
+    );
 
-      const insertUserQuery = `
-        INSERT INTO usuario (id_empleado, username, password_hash)
-        VALUES ($1, $2, $3)
-        RETURNING id_usuario, username;
-      `;
-      const userResult = await client.query(insertUserQuery, [
-        dto.id_empleado,
-        dto.username,
-        passwordHash,
-      ]);
-      const nuevoUsuario = userResult.rows[0];
-
-      const insertRolQuery = `
-        INSERT INTO usuario_rol (id_usuario, id_rol)
-        VALUES ($1, $2);
-      `;
-      await client.query(insertRolQuery, [nuevoUsuario.id_usuario, dto.id_rol]);
-
-      await client.query("COMMIT");
-      return {
-        id_usuario: nuevoUsuario.id_usuario,
-        username: nuevoUsuario.username,
-      };
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw new Error(
-        `Error al registrar usuario: ${(error as Error).message}`,
-      );
-    } finally {
-      client.release();
-    }
+    return {
+      id_usuario: result.rows[0].id_usuario,
+      username: result.rows[0].username,
+    };
   }
 
+  // ─── Login ────────────────────────────────────────────────────────────────
   async login(dto: LoginDTO) {
     const secreto = process.env.JWT_SECRET;
     if (!secreto) throw new Error("CONFIG ERROR: JWT_SECRET no está definido.");
 
+    // Cambios vs versión anterior:
+    // - Eliminado JOIN usuario_rol → usamos u.id_rol directamente
+    // - Eliminado e.id_region      → la región viene de la sucursal del empleado
     const query = `
-      SELECT 
+      SELECT
         u.id_usuario,
         u.username,
         u.password_hash,
         e.id_empleado,
         e.id_sucursal,
-        e.id_region,
-        s.nombre AS nombre_sucursal,
-        rg.nombre AS nombre_region,
-        r.nombre AS rol
+        s.id_region,
+        s.nombre   AS nombre_sucursal,
+        rg.nombre  AS nombre_region,
+        r.nombre   AS rol
       FROM usuario u
-      INNER JOIN empleado e ON u.id_empleado = e.id_empleado
-      LEFT  JOIN sucursal s ON e.id_sucursal = s.id_sucursal
-      LEFT  JOIN region rg ON e.id_region = rg.id_region
-      INNER JOIN usuario_rol  ur ON u.id_usuario = ur.id_usuario
-      INNER JOIN rol r  ON ur.id_rol = r.id_rol
-      WHERE u.username = $1 AND u.activo = true;
+      INNER JOIN empleado  e  ON u.id_empleado = e.id_empleado
+      INNER JOIN rol       r  ON u.id_rol      = r.id_rol
+      LEFT  JOIN sucursal  s  ON e.id_sucursal = s.id_sucursal
+      LEFT  JOIN region    rg ON s.id_region   = rg.id_region
+      WHERE u.username = $1
+        AND u.activo   = true
     `;
+
     const result = await this.pool.query(query, [dto.username]);
-    const usuario = result.rows[0] || null;
+    const usuario = result.rows[0] ?? null;
 
     if (!usuario) throw new Error("Credenciales inválidas");
 
@@ -87,6 +71,7 @@ export class AuthService {
       id_usuario: usuario.id_usuario,
       id_empleado: usuario.id_empleado,
       id_sucursal: usuario.id_sucursal ?? null,
+      // Para GERENTE_REGIONAL: su scope regional llega desde su sucursal
       id_region: usuario.id_region ?? null,
       rol: usuario.rol,
     };

@@ -7,51 +7,42 @@ export class AdminService {
 
   constructor(private readonly pool: Pool) {}
 
-  //Listar todos los empleados con salario actual y usuario
+  // ── Listar empleados activos ──────────────────────────────────────────────
+  // MIGRACIÓN:
+  //  - JOIN puesto eliminado (tabla no existe en v2)
+  //  - JOIN usuario_rol eliminado (id_rol ahora va directo en usuario)
+  //  - Subquery historial_salario eliminado (tabla no existe en v2)
+  //  - rol ahora viene de JOIN rol r ON u.id_rol = r.id_rol
   async listarEmpleados(id_sucursal?: number) {
     const filtroSucursal = id_sucursal
       ? `AND e.id_sucursal = ${Number(id_sucursal)}`
       : "";
 
-    const query = `
-      SELECT
-        e.id_empleado,
-        e.nombre,
-        e.apellido,
-        e.dpi,
-        e.nit,
-        e.telefono,
-        e.email,
-        e.fecha_ingreso,
-        e.activo,
-        s.id_sucursal,
-        s.nombre AS sucursal,
-        p.id_puesto,
-        p.nombre AS puesto,
-        u.id_usuario,
-        u.username,
-        u.activo AS usuario_activo,
-        r.nombre AS rol,
-        hs.salario_base,
-        hs.fecha_vigencia  AS salario_desde
-      FROM empleado e
-      INNER JOIN sucursal   s  ON e.id_sucursal = s.id_sucursal
-      INNER JOIN puesto   p  ON e.id_puesto   = p.id_puesto
-      LEFT  JOIN usuario  u  ON u.id_empleado = e.id_empleado
-      LEFT  JOIN usuario_rol ur ON ur.id_usuario = u.id_usuario
-      LEFT  JOIN rol  r  ON r.id_rol      = ur.id_rol
-      LEFT  JOIN LATERAL (
-          SELECT salario_base, fecha_vigencia
-          FROM   historial_salario
-          WHERE  id_empleado = e.id_empleado
-          ORDER  BY fecha_vigencia DESC
-          LIMIT  1
-      ) hs ON true
-      WHERE e.activo = true ${filtroSucursal}
-      ORDER BY s.nombre, e.apellido, e.nombre;
-    `;
+    const result = await this.pool.query(
+      `SELECT
+         e.id_empleado,
+         e.nombre,
+         e.apellido,
+         e.dpi,
+         e.nit,
+         e.telefono,
+         e.email,
+         e.fecha_ingreso,
+         e.activo,
+         s.id_sucursal,
+         s.nombre   AS sucursal,
+         u.id_usuario,
+         u.username,
+         u.activo   AS usuario_activo,
+         r.nombre   AS rol
+       FROM empleado e
+       INNER JOIN sucursal s ON e.id_sucursal = s.id_sucursal
+       LEFT  JOIN usuario  u ON u.id_empleado = e.id_empleado
+       LEFT  JOIN rol      r ON u.id_rol      = r.id_rol
+       WHERE e.activo = true ${filtroSucursal}
+       ORDER BY s.nombre, e.apellido, e.nombre`,
+    );
 
-    const result = await this.pool.query(query);
     return result.rows.map((r) => ({
       id_empleado: r.id_empleado,
       nombre: r.nombre,
@@ -67,10 +58,6 @@ export class AdminService {
         id_sucursal: r.id_sucursal,
         nombre: r.sucursal,
       },
-      puesto: {
-        id_puesto: r.id_puesto,
-        nombre: r.puesto,
-      },
       usuario: r.id_usuario
         ? {
             id_usuario: r.id_usuario,
@@ -79,27 +66,23 @@ export class AdminService {
             rol: r.rol,
           }
         : null,
-      salario_actual: r.salario_base
-        ? {
-            monto: Number(r.salario_base),
-            desde: r.salario_desde,
-          }
-        : null,
     }));
   }
 
-  //Crear empleado + salario + usuario en una sola transacción
+  // ── Crear empleado + usuario en una sola transacción ─────────────────────
+  // MIGRACIÓN:
+  //  - id_puesto eliminado del INSERT de empleado (columna no existe en v2)
+  //  - historial_salario eliminado (tabla no existe en v2)
+  //  - usuario_rol eliminado — id_rol va directo en el INSERT de usuario
   async crearEmpleadoCompleto(data: {
     nombre: string;
     apellido: string;
     id_sucursal: number;
-    id_puesto: number;
     dpi?: string;
     nit?: string;
     telefono?: string;
     email?: string;
     fecha_ingreso: string;
-    salario_base: number;
     username: string;
     password: string;
     id_rol: number;
@@ -109,36 +92,33 @@ export class AdminService {
     try {
       await client.query("BEGIN");
 
-      //Verificar que el username no exista
+      // Verificar username único
       const usernameExiste = await client.query(
         "SELECT id_usuario FROM usuario WHERE username = $1",
         [data.username],
       );
-      if (usernameExiste.rows.length > 0) {
+      if (usernameExiste.rows.length)
         throw new Error(`El username '${data.username}' ya está en uso.`);
-      }
 
-      //Verificar DPI único si se provee
+      // Verificar DPI único si se provee
       if (data.dpi) {
         const dpiExiste = await client.query(
           "SELECT id_empleado FROM empleado WHERE dpi = $1",
           [data.dpi],
         );
-        if (dpiExiste.rows.length > 0) {
+        if (dpiExiste.rows.length)
           throw new Error(`El DPI '${data.dpi}' ya está registrado.`);
-        }
       }
 
-      //Insertar empleado
+      // Insertar empleado — sin id_puesto (columna eliminada en v2)
       const empRes = await client.query(
         `INSERT INTO empleado
-           (id_sucursal, id_puesto, nombre, apellido, dpi, nit,
+           (id_sucursal, nombre, apellido, dpi, nit,
             telefono, email, fecha_ingreso, activo)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true)
          RETURNING id_empleado`,
         [
           data.id_sucursal,
-          data.id_puesto,
           data.nombre.trim(),
           data.apellido.trim(),
           data.dpi || null,
@@ -150,34 +130,16 @@ export class AdminService {
       );
       const id_empleado = empRes.rows[0].id_empleado;
 
-      //Insertar salario inicial en historial
-      await client.query(
-        `INSERT INTO historial_salario
-           (id_empleado, salario_base, fecha_vigencia, motivo_cambio, registrado_por)
-         VALUES ($1,$2,$3,'Contratación inicial',$4)`,
-        [
-          id_empleado,
-          data.salario_base,
-          data.fecha_ingreso,
-          data.id_usuario_creador,
-        ],
-      );
-
-      //Hashear contraseña y crear usuario
+      // Hashear contraseña y crear usuario
+      // id_rol va directo en usuario — ya no existe tabla usuario_rol
       const hash = await bcrypt.hash(data.password, this.SALT_ROUNDS);
       const usuRes = await client.query(
-        `INSERT INTO usuario (id_empleado, username, password_hash, activo)
-         VALUES ($1,$2,$3,true)
+        `INSERT INTO usuario (id_empleado, username, password_hash, id_rol, activo)
+         VALUES ($1,$2,$3,$4,true)
          RETURNING id_usuario`,
-        [id_empleado, data.username.trim(), hash],
+        [id_empleado, data.username.trim(), hash, data.id_rol],
       );
       const id_usuario = usuRes.rows[0].id_usuario;
-
-      //Asignar rol
-      await client.query(
-        "INSERT INTO usuario_rol (id_usuario, id_rol) VALUES ($1,$2)",
-        [id_usuario, data.id_rol],
-      );
 
       await client.query("COMMIT");
       return { id_empleado, id_usuario };
@@ -189,71 +151,8 @@ export class AdminService {
     }
   }
 
-  //Registrar cambio de salario (historial)
-  async actualizarSalario(data: {
-    id_empleado: number;
-    salario_base: number;
-    fecha_vigencia: string;
-    motivo_cambio: string;
-    id_usuario_creador: number;
-  }) {
-    const empRes = await this.pool.query(
-      "SELECT id_empleado FROM empleado WHERE id_empleado = $1 AND activo = true",
-      [data.id_empleado],
-    );
-    if (empRes.rows.length === 0) {
-      throw new Error("Empleado no encontrado o inactivo.");
-    }
+  // ── Catálogos de apoyo ────────────────────────────────────────────────────
 
-    const result = await this.pool.query(
-      `INSERT INTO historial_salario
-         (id_empleado, salario_base, fecha_vigencia, motivo_cambio, registrado_por)
-       VALUES ($1,$2,$3,$4,$5)
-       RETURNING id_historial`,
-      [
-        data.id_empleado,
-        data.salario_base,
-        data.fecha_vigencia,
-        data.motivo_cambio,
-        data.id_usuario_creador,
-      ],
-    );
-    return { id_historial: result.rows[0].id_historial };
-  }
-
-  //Historial de salarios de un empleado
-  async obtenerHistorialSalario(id_empleado: number) {
-    const result = await this.pool.query(
-      `SELECT
-         hs.id_historial,
-         hs.salario_base,
-         hs.fecha_vigencia,
-         hs.motivo_cambio,
-         hs.created_at,
-         CONCAT(u_reg.nombre_display) AS registrado_por
-       FROM historial_salario hs
-       LEFT JOIN LATERAL (
-           SELECT CONCAT(e.nombre, ' ', e.apellido) AS nombre_display
-           FROM   usuario u
-           INNER JOIN empleado e ON e.id_empleado = u.id_empleado
-           WHERE  u.id_usuario = hs.registrado_por
-           LIMIT 1
-       ) u_reg ON true
-       WHERE hs.id_empleado = $1
-       ORDER BY hs.fecha_vigencia DESC, hs.created_at DESC`,
-      [id_empleado],
-    );
-    return result.rows.map((r) => ({
-      id_historial: r.id_historial,
-      salario_base: Number(r.salario_base),
-      fecha_vigencia: r.fecha_vigencia,
-      motivo_cambio: r.motivo_cambio,
-      registrado_por: r.registrado_por ?? "Sistema",
-      created_at: r.created_at,
-    }));
-  }
-
-  //Catálogos de apoyo
   async listarSucursales() {
     const r = await this.pool.query(
       "SELECT id_sucursal, nombre FROM sucursal WHERE activo=true ORDER BY nombre",
@@ -261,12 +160,8 @@ export class AdminService {
     return r.rows;
   }
 
-  async listarPuestos() {
-    const r = await this.pool.query(
-      "SELECT id_puesto, nombre FROM puesto WHERE activo=true ORDER BY nombre",
-    );
-    return r.rows;
-  }
+  // listarPuestos eliminado — tabla puesto no existe en v2
+  // El rol cumple esa función; se expone listarRoles para el formulario
 
   async listarRoles() {
     const r = await this.pool.query(
@@ -275,7 +170,6 @@ export class AdminService {
     return r.rows;
   }
 
-  //Catálogo de tipos de cliente
   async listarTiposCliente() {
     const r = await this.pool.query(
       "SELECT id_tipo_cliente, nombre FROM tipo_cliente WHERE activo=true ORDER BY nombre",
