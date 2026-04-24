@@ -140,17 +140,17 @@ export class EntregaService {
           [pedido.id_venta],
         );
 
-        // Insertar cobro en ruta (antes INSERT INTO pago)
+        // Insertar cobro en ruta
         const cobroInsert = await client.query(
           `INSERT INTO cobro
-             (id_venta, id_cajero, id_repartidor, id_metodo_cobro,
+            (id_venta, id_cajero, id_repartidor, id_metodo_cobro,
               monto, referencia, cobro_en_ruta)
-           VALUES (
-             $1, NULL, $2,
-             (SELECT id_metodo_cobro FROM metodo_cobro WHERE nombre = 'efectivo'),
-             $3, 'Cobro en ruta por repartidor', true
-           )
-           RETURNING id_cobro`,
+          VALUES (
+            $1, NULL, $2,
+            (SELECT id_metodo_cobro FROM metodo_cobro WHERE nombre = 'efectivo'),
+            $3, NULL, true
+          )
+          RETURNING id_cobro`,
           [pedido.id_venta, id_repartidor, data.monto_cobrado],
         );
         id_cobro_generado = cobroInsert.rows[0].id_cobro;

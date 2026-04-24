@@ -186,24 +186,24 @@ export class AnulacionService {
       await client.query("BEGIN");
 
       const pedidoRes = await client.query(
-        `SELECT pd.id_pedido, v.id_sucursal, ev.nombre AS estadoVenta
-         FROM pedido_domicilio pd
-         JOIN venta         v  ON pd.id_venta         = v.id_venta
-         JOIN estado_venta  ev ON v.id_estado_venta   = ev.id_estado_venta
-         JOIN estado_pedido ep ON pd.id_estado_pedido  = ep.id_estado_pedido
-         WHERE pd.id_venta = $1 AND ep.nombre = 'fallido'
-         FOR UPDATE`,
+        `SELECT pd.id_pedido, v.id_sucursal, ev.nombre AS estado_venta
+          FROM pedido_domicilio pd
+          JOIN venta         v  ON pd.id_venta         = v.id_venta
+          JOIN estado_venta  ev ON v.id_estado_venta   = ev.id_estado_venta
+          JOIN estado_pedido ep ON pd.id_estado_pedido  = ep.id_estado_pedido
+          WHERE pd.id_venta = $1 AND ep.nombre = 'fallido'
+          FOR UPDATE`,
         [id_venta],
       );
 
       if (pedidoRes.rows.length === 0)
         throw new Error("No se encontró un pedido fallido para esta venta.");
 
-      const { id_pedido, id_sucursal, estadoVenta } = pedidoRes.rows[0];
+      const { id_pedido, id_sucursal, estado_venta } = pedidoRes.rows[0];
 
-      if (!["pagada", "pendiente_cobro_contra_entrega"].includes(estadoVenta))
+      if (!["pagada", "pendiente_cobro_contra_entrega"].includes(estado_venta))
         throw new Error(
-          `La venta está en estado '${estadoVenta}' y no puede reagendarse.`,
+          `La venta está en estado '${estado_venta}' y no puede reagendarse.`,
         );
 
       // Verificar repartidor — antes usaba puesto, ahora usa rol
