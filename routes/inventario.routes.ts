@@ -32,7 +32,7 @@ export function crearInventarioRouter(dbPool: Pool): Router {
   //Búsquedas generales y filtros
   router.get("/categorias", inventarioController.obtenerCategorias);
   router.get("/marcas-repuesto", inventarioController.obtenerMarcasRepuesto);
-  router.get("/reacondicionados", inventarioController.obtenerReacondicionados);
+  //router.get("/reacondicionados", inventarioController.obtenerReacondicionados);
 
   return router;
 }

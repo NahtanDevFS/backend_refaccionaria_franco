@@ -89,12 +89,11 @@ export class EntregaController {
     }
   };
 
-  // ─── NUEVO ────────────────────────────────────────────────────────────────
   obtenerMiHistorial = async (req: Request, res: Response): Promise<void> => {
     try {
       const id_repartidor = req.usuario!.id_empleado;
 
-      // Rango por defecto: últimos 7 días
+      //Rango por defecto: últimos 7 días
       const hoy = new Date();
       const hace7 = new Date(hoy);
       hace7.setDate(hoy.getDate() - 6);

@@ -6,6 +6,16 @@ import { ZodError } from "zod";
 
 const ROLES_GLOBALES = ["ADMINISTRADOR", "GERENTE_REGIONAL"];
 
+function requireSucursal(req: Request): number {
+  const id = req.usuario!.id_sucursal;
+  if (id === null) {
+    throw new Error(
+      "Este endpoint requiere un usuario asociado a una sucursal.",
+    );
+  }
+  return id;
+}
+
 export class VentaController {
   constructor(private readonly ventaService: VentaService) {}
 
@@ -15,7 +25,6 @@ export class VentaController {
       const limit = req.query.limit ? Number(req.query.limit) : 20;
 
       const rol = req.usuario!.rol;
-      const idSucToken = req.usuario!.id_sucursal;
       const esGlobal = ROLES_GLOBALES.includes(rol);
 
       let id_sucursal: number | undefined;
@@ -24,7 +33,8 @@ export class VentaController {
           ? Number(req.query.id_sucursal)
           : undefined;
       } else {
-        id_sucursal = idSucToken;
+        //Para roles locales id_sucursal nunca es null (lo garantiza el middleware de auth)
+        id_sucursal = requireSucursal(req);
       }
 
       const filtros = {
@@ -65,7 +75,7 @@ export class VentaController {
     res: Response,
   ): Promise<void> => {
     try {
-      const idSucursal = req.usuario!.id_sucursal;
+      const idSucursal = requireSucursal(req); // ✅ era: req.usuario!.id_sucursal
       const vendedores = await this.ventaService.obtenerVendedores(idSucursal);
       res.status(200).json({ success: true, data: vendedores });
     } catch (error) {
@@ -77,15 +87,13 @@ export class VentaController {
 
   crearOrden = async (req: Request, res: Response): Promise<void> => {
     try {
-      // 1. Validar el body con Zod (incluye id_sucursal e id_vendedor)
       const bodyValidado = crearVentaSchema.parse(req.body);
 
-      // 2. Sobreescribir id_sucursal e id_vendedor con los valores del token JWT.
-      //    Esto garantiza que un usuario no pueda registrar ventas en nombre
-      //    de otro vendedor o en una sucursal a la que no pertenece.
+      const id_sucursal = requireSucursal(req);
+
       const datosSeguro = {
         ...bodyValidado,
-        id_sucursal: req.usuario!.id_sucursal,
+        id_sucursal,
         id_vendedor: req.usuario!.id_empleado,
       };
 
@@ -139,14 +147,14 @@ export class VentaController {
     res: Response,
   ): Promise<void> => {
     try {
-      const id_sucursal = req.usuario!.id_sucursal;
+      const id_sucursal = requireSucursal(req);
       const pendientes =
         await this.ventaService.obtenerPendientesAutorizacion(id_sucursal);
       res.status(200).json({ success: true, data: pendientes });
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : "Error interno";
-      res.status(500).json({ success: false, message: errorMessage });
+      res.status(400).json({ success: false, message: errorMessage });
     }
   };
 
@@ -175,7 +183,7 @@ export class VentaController {
     res: Response,
   ): Promise<void> => {
     try {
-      const idSucursal = req.usuario!.id_sucursal;
+      const idSucursal = requireSucursal(req);
       const repartidores =
         await this.ventaService.obtenerRepartidores(idSucursal);
       res.status(200).json({ success: true, data: repartidores });
@@ -191,7 +199,7 @@ export class VentaController {
     res: Response,
   ): Promise<void> => {
     try {
-      const id_sucursal = req.usuario!.id_sucursal;
+      const id_sucursal = requireSucursal(req);
 
       const hoy = new Date().toISOString().split("T")[0];
       const hace30 = new Date(Date.now() - 29 * 86400000)

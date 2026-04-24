@@ -9,14 +9,14 @@ export class ClienteController {
 
   crearCliente = async (req: Request, res: Response): Promise<void> => {
     try {
-      // 1. Validar payload con Zod
+      //Validar payload con Zod
       const dtoValidado = crearClienteSchema.parse(req.body);
 
-      // 2. Ejecutar servicio
+      //Ejecutar servicio
       const nuevoCliente =
         await this.clienteService.registrarCliente(dtoValidado);
 
-      // 3. Respuesta exitosa
+      //Respuesta exitosa
       res.status(201).json({
         success: true,
         message: "Cliente registrado exitosamente",
@@ -74,12 +74,10 @@ export class ClienteController {
     try {
       const nit = req.query.nit as string;
       if (!nit) {
-        res
-          .status(400)
-          .json({
-            success: false,
-            message: "El parámetro 'nit' es obligatorio",
-          });
+        res.status(400).json({
+          success: false,
+          message: "El parámetro 'nit' es obligatorio",
+        });
         return;
       }
 

@@ -3,7 +3,7 @@ import { Request, Response } from "express";
 import { AdminService } from "../services/AdminService";
 import { z, ZodError } from "zod";
 
-// ─── Schemas de validación ────────────────────────────────────────────────────
+//Schemas de validación
 const crearEmpleadoSchema = z.object({
   nombre: z.string().min(2, "Nombre requerido"),
   apellido: z.string().min(2, "Apellido requerido"),
@@ -14,9 +14,7 @@ const crearEmpleadoSchema = z.object({
   telefono: z.string().max(20).optional(),
   email: z.string().email().optional().or(z.literal("")),
   fecha_ingreso: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD"),
-  // Salario — tipo_contrato eliminado
   salario_base: z.number().positive("El salario debe ser mayor a 0"),
-  // Usuario
   username: z.string().min(4, "Username mínimo 4 caracteres"),
   password: z.string().min(6, "Password mínimo 6 caracteres"),
   id_rol: z.number().int().positive(),
@@ -24,7 +22,7 @@ const crearEmpleadoSchema = z.object({
 
 const actualizarSalarioSchema = z.object({
   salario_base: z.number().positive(),
-  // tipo_contrato eliminado
+  //tipo_contrato
   fecha_vigencia: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   motivo_cambio: z.string().min(3, "Indique el motivo del cambio"),
 });
@@ -32,7 +30,7 @@ const actualizarSalarioSchema = z.object({
 export class AdminController {
   constructor(private readonly adminService: AdminService) {}
 
-  // GET /admin/empleados?id_sucursal=1
+  //GET /admin/empleados?id_sucursal=1
   listarEmpleados = async (req: Request, res: Response): Promise<void> => {
     try {
       const id_sucursal = req.query.id_sucursal
@@ -45,7 +43,7 @@ export class AdminController {
     }
   };
 
-  // POST /admin/empleados
+  //POST /admin/empleados
   crearEmpleado = async (req: Request, res: Response): Promise<void> => {
     try {
       const payload = crearEmpleadoSchema.parse(req.body);
@@ -74,7 +72,7 @@ export class AdminController {
     }
   };
 
-  // GET /admin/empleados/:id/salario
+  //GET /admin/empleados/:id/salario
   obtenerHistorialSalario = async (
     req: Request,
     res: Response,
@@ -92,7 +90,7 @@ export class AdminController {
     }
   };
 
-  // POST /admin/empleados/:id/salario
+  //POST /admin/empleados/:id/salario
   actualizarSalario = async (req: Request, res: Response): Promise<void> => {
     try {
       const id_empleado = Number(req.params.id);
@@ -122,7 +120,7 @@ export class AdminController {
     }
   };
 
-  // GET /admin/catalogos
+  //GET /admin/catalogos
   obtenerCatalogos = async (req: Request, res: Response): Promise<void> => {
     try {
       const [sucursales, puestos, roles, tipos_cliente] = await Promise.all([

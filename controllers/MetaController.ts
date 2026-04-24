@@ -7,7 +7,7 @@ import { ZodError } from "zod";
 export class MetaController {
   constructor(private readonly metaService: MetaService) {}
 
-  // ─── Asignar meta ───────────────────────────────────────────────────────
+  //Asignar meta
   asignarMeta = async (req: Request, res: Response): Promise<void> => {
     try {
       const dtoValidado = asignarMetaSchema.parse(req.body);

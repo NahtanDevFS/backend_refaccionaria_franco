@@ -23,9 +23,9 @@ export class BodegaController {
     }
   };
 
-  // GET /bodega/lotes/:id_producto
-  // Devuelve los lotes activos de un producto en la sucursal del usuario.
-  // Llamada lazy desde el frontend al expandir el panel de lotes.
+  //GET /bodega/lotes/:id_producto
+  //Devuelve los lotes activos de un producto en la sucursal del usuario.
+  //Llamada lazy desde el frontend al expandir el panel de lotes.
   obtenerLotes = async (req: Request, res: Response): Promise<void> => {
     try {
       const id_sucursal = req.usuario!.id_sucursal;
