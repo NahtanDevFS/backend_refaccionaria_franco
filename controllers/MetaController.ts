@@ -226,4 +226,58 @@ export class MetaController {
       });
     }
   };
+
+  // Actualizar meta existente
+  actualizarMeta = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const id_empleado = parseInt(req.params.id_empleado as string, 10);
+      if (isNaN(id_empleado)) {
+        res
+          .status(400)
+          .json({ exito: false, mensaje: "ID de empleado inválido" });
+        return;
+      }
+
+      const {
+        anio,
+        mes,
+        monto_meta,
+        comision_base_pct,
+        comision_excedente_pct,
+      } = req.body;
+
+      if (!anio || !mes || !monto_meta) {
+        res
+          .status(400)
+          .json({
+            exito: false,
+            mensaje: "anio, mes y monto_meta son obligatorios",
+          });
+        return;
+      }
+
+      const actualizado = await this.metaService.actualizarMeta(
+        id_empleado,
+        Number(anio),
+        Number(mes),
+        Number(monto_meta),
+        comision_base_pct !== undefined ? Number(comision_base_pct) : 2.0,
+        comision_excedente_pct !== undefined
+          ? Number(comision_excedente_pct)
+          : 4.0,
+      );
+
+      res.status(200).json({
+        exito: true,
+        mensaje: "Meta actualizada exitosamente",
+        data: actualizado,
+      });
+    } catch (error) {
+      res.status(400).json({
+        exito: false,
+        mensaje:
+          error instanceof Error ? error.message : "Error al actualizar meta",
+      });
+    }
+  };
 }

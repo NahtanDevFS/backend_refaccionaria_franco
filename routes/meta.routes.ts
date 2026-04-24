@@ -13,7 +13,9 @@ export function crearMetaRouter(dbPool: Pool): Router {
   //Asignación
   router.post("/asignar", metaController.asignarMeta);
 
-  //Cálculo de comisiones individual (existente)
+  router.put("/actualizar/:id_empleado", metaController.actualizarMeta);
+
+  //Cálculo de comisiones individual
   router.get(
     "/rendimiento/:id_empleado/:anio/:mes",
     metaController.consultarRendimiento,

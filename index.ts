@@ -31,7 +31,11 @@ app.use(
       "https://frontend-refaccionaria-franco.vercel.app",
     ],
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "ngrok-skip-browser-warning",
+    ],
   }),
 );
 
@@ -69,3 +73,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Servidor corriendo de forma segura en el puerto ${PORT}`);
 });
+
+//ngrok http --domain=reluctant-smartly-muppet.ngrok-free.dev 3000
+//http://localhost:3000/api
+//https://reluctant-smartly-muppet.ngrok-free.dev/api

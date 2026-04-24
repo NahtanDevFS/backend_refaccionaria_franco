@@ -8,11 +8,7 @@ const ROL_GERENTE_REG = "GERENTE_REGIONAL";
 export class MetaService {
   constructor(private readonly pool: Pool) {}
 
-  // ── Asignar meta mensual ──────────────────────────────────────────────────
-  // MIGRACIÓN:
-  //  - Ya no existe esquema_comision — comision_base_pct y comision_excedente_pct
-  //    van directamente en meta_venta
-  //  - Verificación de puesto 'vendedor' → rol 'VENDEDOR' via usuario + rol
+  //Asignar meta mensual
   async asignarMetaMensual(dto: AsignarMetaDTO) {
     // Verificar que el empleado existe, está activo y tiene rol VENDEDOR
     const resEmp = await this.pool.query(
@@ -31,7 +27,7 @@ export class MetaService {
         "El empleado no existe, no está activo, o no tiene rol de vendedor.",
       );
 
-    // Verificar que no tenga ya una meta para ese mes/año
+    //Verificar que no tenga ya una meta para ese mes/año
     const resExistente = await this.pool.query(
       `SELECT id_meta FROM meta_venta
        WHERE id_empleado = $1 AND anio = $2 AND mes = $3`,
@@ -45,7 +41,6 @@ export class MetaService {
     const base = dto.comision_base_pct ?? 2.0;
     const exc = dto.comision_excedente_pct ?? 4.0;
 
-    // comision_base_pct y comision_excedente_pct van directo — ya no existe id_esquema
     const resInsert = await this.pool.query(
       `INSERT INTO meta_venta
          (id_empleado, anio, mes, monto_meta, comision_base_pct, comision_excedente_pct)
@@ -58,7 +53,7 @@ export class MetaService {
     return { ...meta, comision_base_pct: base, comision_excedente_pct: exc };
   }
 
-  // ── Helper: construir cláusula de filtro por sucursal/región ─────────────
+  //construir cláusula de filtro por sucursal/región
   private _buildFiltroSucursal(
     rolUsuario: string,
     idSucursalToken: number | null,
@@ -90,12 +85,12 @@ export class MetaService {
       return { clause: `AND s.id_region = $${params.length}`, params };
     }
 
-    // Roles locales: solo su sucursal
+    //Roles locales: solo su sucursal
     params.push(idSucursalToken);
     return { clause: `AND e.id_sucursal = $${params.length}`, params };
   }
 
-  // ── Rendimiento mensual (mes actual) ─────────────────────────────────────
+  //Rendimiento mensual (mes actual)
   async obtenerRendimientoMensual(
     rolUsuario: string,
     idSucursalToken: number | null,
@@ -115,10 +110,12 @@ export class MetaService {
          e.id_empleado, e.id_sucursal,
          s.nombre                               AS nombre_sucursal,
          CONCAT(e.nombre,' ',e.apellido)        AS nombre_vendedor,
-         m.monto_meta,
+        m.monto_meta,
+         m.comision_base_pct,
+         m.comision_excedente_pct,
          COALESCE(SUM(v.total) FILTER (
            WHERE ev.nombre = 'pagada'
-         ), 0)                                  AS monto_vendido,
+         ), 0) AS monto_vendido,
          CASE
            WHEN m.monto_meta > 0
            THEN (COALESCE(SUM(v.total) FILTER (WHERE ev.nombre='pagada'),0)
@@ -137,23 +134,43 @@ export class MetaService {
          AND m.anio = EXTRACT(YEAR  FROM CURRENT_DATE)
          AND e.activo = true
          ${clause}
-       GROUP BY e.id_empleado, e.id_sucursal, s.nombre, e.nombre, e.apellido, m.monto_meta
+       GROUP BY e.id_empleado, e.id_sucursal, s.nombre, e.nombre, e.apellido,
+                m.monto_meta, m.comision_base_pct, m.comision_excedente_pct
        ORDER BY s.nombre, e.nombre`,
       params,
     );
 
-    return result.rows.map((row) => ({
-      id_empleado: row.id_empleado,
-      id_sucursal: row.id_sucursal,
-      nombre_sucursal: row.nombre_sucursal,
-      nombre_vendedor: row.nombre_vendedor,
-      monto_meta: Number(row.monto_meta),
-      monto_vendido: Number(row.monto_vendido),
-      porcentaje_cumplimiento: Number(row.porcentaje_cumplimiento),
-    }));
+    return result.rows.map((row) => {
+      const meta = Number(row.monto_meta);
+      const vendido = Number(row.monto_vendido);
+      const base_pct = Number(row.comision_base_pct) / 100;
+      const exc_pct = Number(row.comision_excedente_pct) / 100;
+      const excedente = Math.max(0, vendido - meta);
+      const comisionBase = Number(
+        (Math.min(vendido, meta) * base_pct).toFixed(2),
+      );
+      const comisionExc = Number((excedente * exc_pct).toFixed(2));
+
+      return {
+        id_empleado: row.id_empleado,
+        id_sucursal: row.id_sucursal,
+        nombre_sucursal: row.nombre_sucursal,
+        nombre_vendedor: row.nombre_vendedor,
+        monto_meta: meta,
+        monto_vendido: vendido,
+        porcentaje_cumplimiento: Number(
+          Number(row.porcentaje_cumplimiento).toFixed(2),
+        ),
+        comision_base_pct: Number(row.comision_base_pct),
+        comision_excedente_pct: Number(row.comision_excedente_pct),
+        comision_base: comisionBase,
+        comision_excedente: comisionExc,
+        comision_total: Number((comisionBase + comisionExc).toFixed(2)),
+      };
+    });
   }
 
-  // ── Consolidado de la sucursal/región (mes actual) ────────────────────────
+  //Consolidado de la sucursal/región (mes actual)
   async obtenerConsolidadoSucursal(
     rolUsuario: string,
     idSucursalToken: number | null,
@@ -205,8 +222,7 @@ export class MetaService {
     };
   }
 
-  // ── Vendedores disponibles para asignar meta ──────────────────────────────
-  // MIGRACIÓN: puesto 'vendedor' → rol 'VENDEDOR'
+  //Vendedores disponibles para asignar meta
   async obtenerVendedoresParaAsignar(
     rolUsuario: string,
     idSucursalToken: number | null,
@@ -230,7 +246,9 @@ export class MetaService {
          e.id_sucursal,
          s.nombre                        AS nombre_sucursal,
          CASE WHEN m.id_meta IS NOT NULL THEN true ELSE false END AS ya_tiene_meta,
-         m.monto_meta                    AS meta_actual
+         m.monto_meta                    AS meta_actual,
+         m.comision_base_pct             AS comision_base_pct_actual,
+         m.comision_excedente_pct        AS comision_excedente_pct_actual
        FROM empleado e
        INNER JOIN usuario    u ON u.id_empleado = e.id_empleado
        INNER JOIN rol        r ON u.id_rol      = r.id_rol
@@ -252,16 +270,20 @@ export class MetaService {
       nombre_sucursal: row.nombre_sucursal,
       ya_tiene_meta: row.ya_tiene_meta,
       meta_actual: row.meta_actual ? Number(row.meta_actual) : null,
+      comision_base_pct_actual: row.comision_base_pct_actual
+        ? Number(row.comision_base_pct_actual)
+        : null,
+      comision_excedente_pct_actual: row.comision_excedente_pct_actual
+        ? Number(row.comision_excedente_pct_actual)
+        : null,
     }));
   }
 
-  // ── Sugerencia automática de meta para un vendedor ────────────────────────
-  // MIGRACIÓN: ya no hace JOIN a esquema_comision —
-  //  lee comision_base_pct y comision_excedente_pct directamente de meta_venta
+  //Sugerencia automática de meta para un vendedor
   async obtenerSugerenciaMeta(id_empleado: number) {
     const hoy = new Date();
     let anioRef = hoy.getFullYear();
-    let mesRef = hoy.getMonth(); // 0=enero, entonces getMonth() da el mes anterior al actual
+    let mesRef = hoy.getMonth(); //0=enero, entonces getMonth() da el mes anterior al actual
     if (mesRef === 0) {
       mesRef = 12;
       anioRef -= 1;
@@ -318,8 +340,7 @@ export class MetaService {
     };
   }
 
-  // ── Historial de metas de un empleado ─────────────────────────────────────
-  // MIGRACIÓN: JOIN esquema_comision eliminado — lee comisiones directo de meta_venta
+  //Historial de metas de un empleado
   async obtenerHistorialMetas(id_empleado: number) {
     const result = await this.pool.query(
       `SELECT
@@ -379,8 +400,7 @@ export class MetaService {
     });
   }
 
-  // ── Cálculo de rendimiento y comisión individual ──────────────────────────
-  // MIGRACIÓN: JOIN esquema_comision eliminado — lee comisiones directo de meta_venta
+  //Cálculo de rendimiento y comisión individual
   async calcularRendimientoYComision(
     id_empleado: number,
     anio: number,
@@ -436,7 +456,7 @@ export class MetaService {
     };
   }
 
-  // ── Sucursales disponibles para el selector en frontend ───────────────────
+  //Sucursales disponibles para el selector en frontend
   async obtenerSucursales(rolUsuario: string, idRegionToken: number | null) {
     if (rolUsuario === ROL_GERENTE_REG && idRegionToken) {
       const r = await this.pool.query(
@@ -452,5 +472,40 @@ export class MetaService {
        WHERE activo = true ORDER BY nombre`,
     );
     return r.rows;
+  }
+
+  async actualizarMeta(
+    id_empleado: number,
+    anio: number,
+    mes: number,
+    monto_meta: number,
+    comision_base_pct: number,
+    comision_excedente_pct: number,
+  ) {
+    const res = await this.pool.query(
+      `UPDATE meta_venta
+          SET monto_meta            = $1,
+              comision_base_pct     = $2,
+              comision_excedente_pct= $3
+        WHERE id_empleado = $4
+          AND anio        = $5
+          AND mes         = $6
+        RETURNING *`,
+      [
+        monto_meta,
+        comision_base_pct,
+        comision_excedente_pct,
+        id_empleado,
+        anio,
+        mes,
+      ],
+    );
+
+    if (!res.rows.length)
+      throw new Error(
+        `No existe meta para el empleado ${id_empleado} en ${mes}/${anio}.`,
+      );
+
+    return res.rows[0];
   }
 }
