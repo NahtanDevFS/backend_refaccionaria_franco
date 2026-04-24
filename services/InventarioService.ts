@@ -1,11 +1,10 @@
 // services/InventarioService.ts
-// MIGRACIÓN: producto_sucursal → reorden_producto_sucursal (ps → rps)
 import { Pool } from "pg";
 
 export class InventarioService {
   constructor(private readonly pool: Pool) {}
 
-  // ── Búsqueda centralizada de stock (vista general admin/bodega) ───────────
+  //  Búsqueda centralizada de stock (vista general admin/bodega)
   async consultarStockCentralizado(criterio: string) {
     if (!criterio || criterio.trim().length < 3)
       throw new Error(
@@ -46,7 +45,7 @@ export class InventarioService {
     return { mensaje: "Stock consultado exitosamente", data: resultados };
   }
 
-  // ── Catálogos ─────────────────────────────────────────────────────────────
+  // Catálogos
   async obtenerCategorias() {
     const result = await this.pool.query(
       `SELECT id_categoria, nombre FROM categoria_producto WHERE activo = true ORDER BY nombre ASC`,
@@ -76,8 +75,7 @@ export class InventarioService {
     return result.rows;
   }
 
-  // ── Búsqueda multi-sucursal por nombre/SKU/categoría/marca ───────────────
-  // MIGRACIÓN: producto_sucursal → reorden_producto_sucursal
+  //Búsqueda multi-sucursal por nombre/SKU/categoría/marca
   async buscarProductoMultiSucursal(
     idSucursalLocal: number,
     termino?: string,
@@ -179,8 +177,7 @@ export class InventarioService {
     return [...normales, ...reacondicionados];
   }
 
-  // ── Búsqueda por vehículo ─────────────────────────────────────────────────
-  // MIGRACIÓN: producto_sucursal → reorden_producto_sucursal
+  //Búsqueda por vehículo
   async buscarProductosPorVehiculo(
     id_sucursal: number,
     id_modelo: number,
@@ -286,7 +283,7 @@ export class InventarioService {
     return [...normales, ...reacondicionados];
   }
 
-  // ── Compatibilidades de un producto ───────────────────────────────────────
+  //Compatibilidades de un producto
   async obtenerCompatibilidadesProducto(id_producto: number) {
     const result = await this.pool.query(
       `SELECT

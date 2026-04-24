@@ -21,7 +21,7 @@ export const verificarToken = (
       return;
     }
 
-    //extraer el token (viene con el formato "Bearer eyJ...")
+    //extraer el token (viene con el formato "Bearer ")
     const token = authHeader.split(" ")[1];
     const secreto = process.env.JWT_SECRET;
 

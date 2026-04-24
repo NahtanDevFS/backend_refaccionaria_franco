@@ -5,7 +5,7 @@ import { RegistrarPagoDTO } from "../dtos/RegistrarPagoDTO";
 export class CajaService {
   constructor(private readonly pool: Pool) {}
 
-  // ── Órdenes pendientes de cobro en mostrador ──────────────────────────────
+  // Órdenes pendientes de cobro en mostrador
   async obtenerPendientes(id_sucursal: number) {
     const result = await this.pool.query(
       `SELECT
@@ -29,7 +29,7 @@ export class CajaService {
     return result.rows.map((row) => ({ ...row, total: Number(row.total) }));
   }
 
-  // ── Registrar cobro (antes registrarPago) ─────────────────────────────────
+  // ── Registrar cobro
   async registrarPago(id_cajero: number, data: RegistrarPagoDTO) {
     const client = await this.pool.connect();
     try {
@@ -73,8 +73,7 @@ export class CajaService {
         );
       }
 
-      // Insertar en cobro (antes tabla pago)
-      // metodo_pago → id_metodo_cobro vía subquery al catálogo
+      // Insertar en cobro
       await client.query(
         `INSERT INTO cobro
            (id_venta, id_cajero, id_metodo_cobro, monto, referencia, cobro_en_ruta)
@@ -110,7 +109,7 @@ export class CajaService {
     }
   }
 
-  // ── Resumen de cobros del día (para el arqueo) ────────────────────────────
+  //Resumen de cobros del día (para el arqueo)
   async obtenerResumenDia(id_cajero: number) {
     const result = await this.pool.query(
       `SELECT mc.nombre AS metodo_pago, COALESCE(SUM(c.monto), 0) AS total
@@ -129,7 +128,7 @@ export class CajaService {
     }));
   }
 
-  // ── Cobros de repartidores pendientes de liquidar ─────────────────────────
+  // Cobros de repartidores pendientes de liquidar
   async obtenerCobrosRepartidoresPendientes(id_sucursal: number) {
     const result = await this.pool.query(
       `SELECT
@@ -166,7 +165,7 @@ export class CajaService {
     }));
   }
 
-  // ── Liquidar cobros de un repartidor ──────────────────────────────────────
+  //Liquidar cobros de un repartidor
   async liquidarRepartidor(
     id_cajero: number,
     id_repartidor: number,
@@ -222,7 +221,7 @@ export class CajaService {
     }
   }
 
-  // ── Historial de cobros ───────────────────────────────────────────────────
+  //Historial de cobros
   async obtenerHistorial(id_sucursal: number, desde?: string, hasta?: string) {
     const fechaDesde = desde ?? new Date().toISOString().split("T")[0];
     const fechaHasta = hasta ?? new Date().toISOString().split("T")[0];

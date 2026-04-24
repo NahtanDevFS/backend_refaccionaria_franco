@@ -1,6 +1,6 @@
 // middlewares/db.middleware.ts
 //lee el rol del JWT (ya inyectado en req.usuario por verificarToken) y asigna el pool de PostgreSQL correspondiente a req.dbPool
-//así cada request opera con los permisos exactos de su rol.
+//así cada request opera con los permisos exactos de su rol
 
 import { Request, Response, NextFunction } from "express";
 import { obtenerPoolPorRol } from "../db";
@@ -21,7 +21,6 @@ export const asignarPoolPorRol = (
       return;
     }
 
-    //asignamos el pool correcto al request, los servicios lo usarán
     req.dbPool = obtenerPoolPorRol(rol);
 
     next();

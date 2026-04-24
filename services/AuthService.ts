@@ -10,11 +10,10 @@ export class AuthService {
 
   constructor(private readonly pool: Pool) {}
 
-  // ─── Registro (ruta comentada en producción, mantenida para completitud) ──
   async registrar(dto: RegistrarUsuarioDTO) {
     const passwordHash = await bcrypt.hash(dto.password, this.SALT_ROUNDS);
 
-    // id_rol va directo en usuario — ya no existe tabla usuario_rol
+    // id_rol va directo en usuario
     const result = await this.pool.query(
       `INSERT INTO usuario (id_empleado, username, password_hash, id_rol)
        VALUES ($1, $2, $3, $4)
@@ -28,14 +27,11 @@ export class AuthService {
     };
   }
 
-  // ─── Login ────────────────────────────────────────────────────────────────
+  // Login
   async login(dto: LoginDTO) {
     const secreto = process.env.JWT_SECRET;
     if (!secreto) throw new Error("CONFIG ERROR: JWT_SECRET no está definido.");
 
-    // Cambios vs versión anterior:
-    // - Eliminado JOIN usuario_rol → usamos u.id_rol directamente
-    // - Eliminado e.id_region      → la región viene de la sucursal del empleado
     const query = `
       SELECT
         u.id_usuario,

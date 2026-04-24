@@ -5,11 +5,7 @@ import { EmitirDespachoDTO, AjusteInventarioDTO } from "../dtos/BodegaDTO";
 export class BodegaService {
   constructor(private readonly pool: Pool) {}
 
-  // ── Inventario local con costo promedio ponderado ─────────────────────────
-  // MIGRACIÓN:
-  //  - producto_sucursal → reorden_producto_sucursal (ps → rps)
-  //  - id_producto_sucursal → id_reorden (aliasado para compat. frontend)
-  //  - producto_proveedor eliminado → costo solo desde lotes activos
+  // Inventario local con costo promedio ponderado
   async obtenerInventarioLocal(id_sucursal: number, filtros?: any) {
     let query = `
       SELECT
@@ -112,8 +108,7 @@ export class BodegaService {
     }));
   }
 
-  // ── Lotes activos de un producto ──────────────────────────────────────────
-  // MIGRACIÓN: eliminado id_orden_compra (columna no existe en lote_inventario v2)
+  //Lotes activos de un producto
   async obtenerLotesDeProducto(id_producto: number, id_sucursal: number) {
     const query = `
       SELECT
@@ -143,15 +138,11 @@ export class BodegaService {
       costo_unitario: Number(row.costo_unitario),
       fecha_ingreso: row.fecha_ingreso as Date,
       es_apertura: row.es_apertura as boolean,
-      id_orden_compra: null, // columna eliminada en v2; mantenido para compat. frontend
+      id_orden_compra: null,
     }));
   }
 
-  // ── Emitir despacho de traslado ───────────────────────────────────────────
-  // MIGRACIÓN:
-  //  - nota_despacho.estado → id_estado_despacho FK ('en_ruta' → 'pendiente')
-  //  - producto_sucursal   → reorden_producto_sucursal
-  //  - movimiento_inventario: id_producto_sucursal→id_reorden, tipo→id_tipo_movimiento
+  // Emitir despacho de traslado
   async emitirDespacho(
     id_sucursal_origen: number,
     id_usuario: number,
@@ -166,7 +157,6 @@ export class BodegaService {
     try {
       await client.query("BEGIN");
 
-      // 'en_ruta' → 'pendiente' en el catálogo v2
       const resNota = await client.query(
         `INSERT INTO nota_despacho
            (id_sucursal_origen, id_sucursal_destino, id_usuario_emite, id_estado_despacho)
@@ -180,7 +170,6 @@ export class BodegaService {
       const id_despacho = resNota.rows[0].id_despacho;
 
       for (const det of data.detalles) {
-        // Bloquear en reorden_producto_sucursal (reemplaza producto_sucursal)
         const rpsRes = await client.query(
           `SELECT rps.id_reorden
            FROM reorden_producto_sucursal rps
@@ -220,8 +209,6 @@ export class BodegaService {
           [id_despacho, det.id_producto, det.cantidad],
         );
 
-        // id_reorden reemplaza id_producto_sucursal
-        // id_tipo_movimiento (FK) reemplaza tipo (VARCHAR)
         const movRes = await client.query(
           `INSERT INTO movimiento_inventario
              (id_reorden, id_usuario, id_tipo_movimiento, cantidad,
@@ -255,8 +242,7 @@ export class BodegaService {
     }
   }
 
-  // ── Recepciones pendientes para una sucursal destino ─────────────────────
-  // MIGRACIÓN: nd.estado='en_ruta' → ed.nombre='pendiente'
+  // Recepciones pendientes para una sucursal destino
   async obtenerRecepciones(id_sucursal_destino: number) {
     const query = `
       SELECT
@@ -279,12 +265,7 @@ export class BodegaService {
     return res.rows;
   }
 
-  // ── Confirmar recepción de traslado ───────────────────────────────────────
-  // MIGRACIÓN:
-  //  - nota_despacho.estado  → id_estado_despacho FK
-  //  - producto_sucursal     → reorden_producto_sucursal
-  //  - detalle_consumo_lote  ELIMINADO → usamos movimiento_inventario.id_lote_detalle
-  //  - movimiento_inventario: id_producto_sucursal→id_reorden, tipo→id_tipo_movimiento
+  //  Confirmar recepción de traslado
   async confirmarRecepcion(
     id_despacho: number,
     id_sucursal_destino: number,
@@ -294,7 +275,6 @@ export class BodegaService {
     try {
       await client.query("BEGIN");
 
-      // Verificar despacho — 'en_ruta' en v1 → 'pendiente' en v2
       const notaRes = await client.query(
         `SELECT ed.nombre AS estado, nd.id_sucursal_origen
          FROM nota_despacho nd
@@ -333,7 +313,6 @@ export class BodegaService {
         const cantidadRecibida = Number(det.cantidad);
 
         // UPSERT en reorden_producto_sucursal para el destino
-        // (reemplaza el UPSERT en producto_sucursal)
         const rpsRes = await client.query(
           `INSERT INTO reorden_producto_sucursal (id_producto, id_sucursal)
            VALUES ($1, $2)
@@ -377,8 +356,6 @@ export class BodegaService {
         );
 
         // Trazar lotes consumidos en origen via movimiento_inventario.id_lote_detalle
-        // MIGRACIÓN: reemplaza el JOIN a detalle_consumo_lote (tabla eliminada en v2)
-        // fn_consumir_lotes_fifo ahora escribe id_lote_detalle directamente en movimiento_inventario
         const lotesOrigenRes = await client.query(
           `SELECT ld.id_lote, ld.costo_unitario, mi.cantidad AS cantidad_consumida
            FROM movimiento_inventario mi
@@ -414,8 +391,6 @@ export class BodegaService {
             );
           }
         } else {
-          // Fallback: sin trazabilidad — usar costo del lote más reciente en origen
-          // (producto_proveedor eliminado en v2)
           const costoRes = await client.query(
             `SELECT COALESCE(
                (SELECT costo_unitario FROM lote_detalle
@@ -456,11 +431,7 @@ export class BodegaService {
     }
   }
 
-  // ── Ajuste manual de inventario ───────────────────────────────────────────
-  // MIGRACIÓN:
-  //  - producto_sucursal → reorden_producto_sucursal
-  //  - movimiento_inventario: id_producto_sucursal→id_reorden, tipo→id_tipo_movimiento
-  //  - producto_proveedor eliminado → costo desde lote más reciente o 0.00
+  // Ajuste manual de inventario
   async ajustarInventario(
     id_sucursal: number,
     id_usuario: number,
@@ -470,7 +441,6 @@ export class BodegaService {
     try {
       await client.query("BEGIN");
 
-      // Bloquear en reorden_producto_sucursal (reemplaza producto_sucursal)
       const rpsRes = await client.query(
         `SELECT rps.id_reorden
          FROM reorden_producto_sucursal rps
@@ -505,8 +475,6 @@ export class BodegaService {
           "El ajuste negativo dejaría el stock en números rojos.",
         );
 
-      // id_reorden reemplaza id_producto_sucursal
-      // id_tipo_movimiento (FK) reemplaza tipo (VARCHAR)
       const movRes = await client.query(
         `INSERT INTO movimiento_inventario
            (id_reorden, id_usuario, id_tipo_movimiento,
@@ -535,8 +503,7 @@ export class BodegaService {
           movRes.rows[0].id_movimiento,
         ]);
       } else {
-        // Ajuste positivo: crear lote de reingreso
-        // producto_proveedor eliminado en v2 → costo desde lote más reciente
+        // Ajuste positivo, crear lote de reingreso
         const costoRes = await client.query(
           `SELECT COALESCE(
              (SELECT costo_unitario FROM lote_detalle

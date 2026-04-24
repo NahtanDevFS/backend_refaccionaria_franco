@@ -5,7 +5,6 @@ import { CrearClienteDTO } from "../dtos/ClienteDTO";
 export class ClienteService {
   constructor(private readonly pool: Pool) {}
 
-  //Helper resuelve el id_tipo_cliente desde el nombre en string, si el nombre no existe en el catálogo, devuelve el id de 'particular'.
   private async resolverIdTipoCliente(
     client: any,
     nombreTipo: string,

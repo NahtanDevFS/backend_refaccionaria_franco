@@ -198,7 +198,6 @@ export class VentaService {
             esReacondicionado: true,
           });
         } else {
-          // reorden_producto_sucursal reemplaza producto_sucursal
           const rpsRes = await client.query(
             `SELECT rps.id_reorden, p.precio_venta
              FROM reorden_producto_sucursal rps
@@ -278,8 +277,6 @@ export class VentaService {
           [det.id_producto, data.id_sucursal],
         );
 
-        // id_reorden reemplaza id_producto_sucursal
-        // id_tipo_movimiento (FK) reemplaza tipo (VARCHAR)
         const movRes = await client.query(
           `INSERT INTO movimiento_inventario
              (id_reorden,id_usuario,id_tipo_movimiento,cantidad,cantidad_resultante,id_referencia,tabla_referencia,motivo)
@@ -435,7 +432,6 @@ export class VentaService {
           [estadoDestino, id_supervisor, id_usuario_log, id_venta],
         );
       }
-      // log_auditoria eliminado en BD v2
 
       await client.query("COMMIT");
     } catch (error) {

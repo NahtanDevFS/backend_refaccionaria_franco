@@ -3,8 +3,7 @@ import { z } from "zod";
 
 export const crearVentaSchema = z
   .object({
-    // ── Identidad de la transacción (inyectados por el frontend, verificados
-    //    por el controller contra el token JWT) ────────────────────────────────
+    //Identidad de la transacción (inyectados por el frontend, verificados por el controller contra el token JWT)
     id_sucursal: z
       .number({ message: "id_sucursal es obligatorio" })
       .int()
@@ -65,7 +64,7 @@ export const crearVentaSchema = z
   })
   .refine(
     (data) => {
-      //Validación estricta: si es a domicilio, exige datos de entrega
+      //si es a domicilio, exige datos de entrega
       if (data.canal === "domicilio") {
         return (
           !!data.direccion_entrega &&

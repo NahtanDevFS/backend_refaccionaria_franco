@@ -55,7 +55,7 @@ export class AnulacionService {
         ],
       );
 
-      // Anular cobros activos (antes UPDATE pago)
+      // Anular cobros activos
       await client.query(
         `UPDATE cobro SET activo = false, updated_at = NOW()
          WHERE id_venta = $1 AND activo = true`,
@@ -72,7 +72,7 @@ export class AnulacionService {
         [data.id_venta],
       );
 
-      // Reintegrar stock — reorden_producto_sucursal reemplaza producto_sucursal
+      // Reintegrar stock
       const detallesRes = await client.query(
         `SELECT dv.id_detalle, dv.id_producto, dv.cantidad,
                 dv.id_producto_reacondicionado, rps.id_reorden
@@ -99,8 +99,6 @@ export class AnulacionService {
         const cantidadResultante =
           Number(stockRes.rows[0].stock) + cantidadDevuelta;
 
-        // id_reorden reemplaza id_producto_sucursal
-        // id_tipo_movimiento (FK) reemplaza tipo (VARCHAR)
         const movRes = await client.query(
           `INSERT INTO movimiento_inventario
              (id_reorden, id_usuario, id_tipo_movimiento, cantidad,
@@ -120,7 +118,6 @@ export class AnulacionService {
         );
 
         if (!det.id_producto_reacondicionado) {
-          // producto_proveedor eliminado en v2 — costo desde último lote activo
           const costoRes = await client.query(
             `SELECT COALESCE(
                (SELECT costo_unitario FROM lote_detalle
@@ -206,7 +203,7 @@ export class AnulacionService {
           `La venta está en estado '${estado_venta}' y no puede reagendarse.`,
         );
 
-      // Verificar repartidor — antes usaba puesto, ahora usa rol
+      // Verificar repartidor
       const repRes = await client.query(
         `SELECT e.id_empleado
          FROM empleado e

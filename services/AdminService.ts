@@ -7,12 +7,7 @@ export class AdminService {
 
   constructor(private readonly pool: Pool) {}
 
-  // ── Listar empleados activos ──────────────────────────────────────────────
-  // MIGRACIÓN:
-  //  - JOIN puesto eliminado (tabla no existe en v2)
-  //  - JOIN usuario_rol eliminado (id_rol ahora va directo en usuario)
-  //  - Subquery historial_salario eliminado (tabla no existe en v2)
-  //  - rol ahora viene de JOIN rol r ON u.id_rol = r.id_rol
+  // Listar empleados activos
   async listarEmpleados(id_sucursal?: number) {
     const filtroSucursal = id_sucursal
       ? `AND e.id_sucursal = ${Number(id_sucursal)}`
@@ -69,11 +64,7 @@ export class AdminService {
     }));
   }
 
-  // ── Crear empleado + usuario en una sola transacción ─────────────────────
-  // MIGRACIÓN:
-  //  - id_puesto eliminado del INSERT de empleado (columna no existe en v2)
-  //  - historial_salario eliminado (tabla no existe en v2)
-  //  - usuario_rol eliminado — id_rol va directo en el INSERT de usuario
+  // Crear empleado + usuario en una sola transacción
   async crearEmpleadoCompleto(data: {
     nombre: string;
     apellido: string;
@@ -110,7 +101,7 @@ export class AdminService {
           throw new Error(`El DPI '${data.dpi}' ya está registrado.`);
       }
 
-      // Insertar empleado — sin id_puesto (columna eliminada en v2)
+      // Insertar empleado — sin id_puesto
       const empRes = await client.query(
         `INSERT INTO empleado
            (id_sucursal, nombre, apellido, dpi, nit,
@@ -131,7 +122,6 @@ export class AdminService {
       const id_empleado = empRes.rows[0].id_empleado;
 
       // Hashear contraseña y crear usuario
-      // id_rol va directo en usuario — ya no existe tabla usuario_rol
       const hash = await bcrypt.hash(data.password, this.SALT_ROUNDS);
       const usuRes = await client.query(
         `INSERT INTO usuario (id_empleado, username, password_hash, id_rol, activo)
@@ -151,7 +141,7 @@ export class AdminService {
     }
   }
 
-  // ── Catálogos de apoyo ────────────────────────────────────────────────────
+  //Catálogos de apoyo
 
   async listarSucursales() {
     const r = await this.pool.query(
@@ -159,9 +149,6 @@ export class AdminService {
     );
     return r.rows;
   }
-
-  // listarPuestos eliminado — tabla puesto no existe en v2
-  // El rol cumple esa función; se expone listarRoles para el formulario
 
   async listarRoles() {
     const r = await this.pool.query(

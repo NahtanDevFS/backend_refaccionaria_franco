@@ -6,10 +6,7 @@ import { EstadoPedido } from "../types/pedido.types";
 export class PedidoService {
   constructor(private readonly pool: Pool) {}
 
-  // ── Programar despacho a domicilio ────────────────────────────────────────
-  // MIGRACIÓN:
-  //  - venta.estado (VARCHAR) → JOIN estado_venta → ev.nombre
-  //  - pedido_domicilio.estado (VARCHAR) → id_estado_pedido FK via subquery
+  // Programar despacho a domicilio
   async programarDespacho(dto: ProgramarPedidoDTO) {
     const resultVenta = await this.pool.query(
       `SELECT ev.nombre AS estado, v.id_cliente
@@ -42,7 +39,6 @@ export class PedidoService {
       );
       const id_destinatario = destRes.rows[0].id_destinatario;
 
-      // id_estado_pedido via subquery — ya no es VARCHAR estado
       const result = await client.query(
         `INSERT INTO pedido_domicilio
            (id_venta, id_repartidor, id_destinatario, id_estado_pedido)
@@ -64,9 +60,7 @@ export class PedidoService {
     }
   }
 
-  // ── Reportar resultado de entrega ─────────────────────────────────────────
-  // MIGRACIÓN:
-  //  - SET estado = $1 (VARCHAR) → SET id_estado_pedido = subquery
+  //Reportar resultado de entrega
   async reportarEntrega(id_pedido: number, dto: ResultadoEntregaDTO) {
     await this.pool.query(
       `UPDATE pedido_domicilio

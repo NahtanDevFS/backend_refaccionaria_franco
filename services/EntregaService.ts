@@ -8,7 +8,7 @@ import {
 export class EntregaService {
   constructor(private readonly pool: Pool) {}
 
-  // ── Pedidos activos del repartidor ────────────────────────────────────────
+  // Pedidos activos del repartidor
   async obtenerMisPedidos(id_repartidor: number) {
     const query = `
       SELECT
@@ -66,7 +66,7 @@ export class EntregaService {
     return result.rows.map((row) => ({ ...row, total: Number(row.total) }));
   }
 
-  // ── Confirmar que el repartidor vio la cancelación ────────────────────────
+  // Confirmar que el repartidor vio la cancelación
   async confirmarCancelacion(id_repartidor: number, id_pedido: number) {
     const result = await this.pool.query(
       `UPDATE pedido_domicilio
@@ -90,7 +90,7 @@ export class EntregaService {
     return { id_pedido };
   }
 
-  // ── Marcar entrega como exitosa ───────────────────────────────────────────
+  //Marcar entrega como exitosa
   async marcarExito(id_repartidor: number, data: MarcarEntregaExitosaDTO) {
     const client = await this.pool.connect();
     try {
@@ -180,7 +180,7 @@ export class EntregaService {
     }
   }
 
-  // ── Marcar entrega como fallida ───────────────────────────────────────────
+  // Marcar entrega como fallida
   async marcarFallida(id_repartidor: number, data: MarcarEntregaFallidaDTO) {
     const client = await this.pool.connect();
     try {
@@ -223,9 +223,9 @@ export class EntregaService {
     }
   }
 
-  // ── Comprobante de cobro (para el repartidor) ─────────────────────────────
+  // Comprobante de cobro (para el repartidor)
   async obtenerComprobante(id_cobro: number, id_repartidor: number) {
-    // Seguridad: verificar que el cobro pertenece a un pedido del repartidor
+    //verificar que el cobro pertenece a un pedido del repartidor
     const seguridadRes = await this.pool.query(
       `SELECT c.id_cobro AS id_pago, c.id_venta
        FROM cobro c
@@ -307,7 +307,7 @@ export class EntregaService {
     };
   }
 
-  // ── Historial de entregas del repartidor ──────────────────────────────────
+  //Historial de entregas del repartidor
   async obtenerMiHistorial(
     id_repartidor: number,
     desde: string,

@@ -12,7 +12,7 @@ const ROLES_SUPERVISOR = [
 export class ArqueoService {
   constructor(private readonly pool: Pool) {}
 
-  // ── Cierre de caja ────────────────────────────────────────────────────────
+  // Cierre de caja
   async procesarCierreDeCaja(
     dto: ArqueoDTO & {
       id_cajero: number;
@@ -23,8 +23,7 @@ export class ArqueoService {
     try {
       await client.query("BEGIN");
 
-      // 1. Efectivo del sistema: cobros en efectivo no arquiados de hoy
-      //    metodo_pago → JOIN metodo_cobro para filtrar por nombre
+      //Efectivo del sistema: cobros en efectivo no arquiados de hoy
       const resResumen = await client.query(
         `SELECT COALESCE(SUM(c.monto), 0) AS total
          FROM cobro c
@@ -38,13 +37,12 @@ export class ArqueoService {
       );
       const efectivoSistema = Number(resResumen.rows[0].total);
 
-      // 2. Diferencia y nombre del estado
+      //Diferencia y nombre del estado
       const diferencia = dto.efectivo_contado - efectivoSistema;
       const estadoNombre =
         diferencia === 0 ? EstadoArqueo.CUADRADO : EstadoArqueo.CON_DIFERENCIA;
 
-      // 3. Insertar arqueo
-      //    id_estado_arqueo via subquery — ya no es un VARCHAR
+      // Insertar arqueo
       const result = await client.query(
         `INSERT INTO arqueo_caja
            (id_sucursal, id_cajero, id_supervisor_verifica,
@@ -67,7 +65,7 @@ export class ArqueoService {
       );
       const arqueoRegistrado = result.rows[0];
 
-      // 4. Asociar cobros del día al arqueo
+      //Asociar cobros del día al arqueo
       await client.query(
         `UPDATE cobro
          SET id_arqueo = $1
@@ -96,7 +94,7 @@ export class ArqueoService {
     }
   }
 
-  // ── Verificar arqueo con diferencia (solo supervisor/admin) ───────────────
+  //Verificar arqueo con diferencia (solo supervisor/admin)
   async verificarArqueo(
     id_arqueo: number,
     id_supervisor: number,
@@ -131,7 +129,7 @@ export class ArqueoService {
     return { id_arqueo, verificado_por: id_supervisor };
   }
 
-  // ── Historial de arqueos ──────────────────────────────────────────────────
+  //Historial de arqueos
   async obtenerHistorialArqueos(params: {
     id_sucursal: number;
     rol: string;
@@ -226,9 +224,7 @@ export class ArqueoService {
     };
   }
 
-  // ── Cajeros de la sucursal ────────────────────────────────────────────────
-  // Antes filtraba por puesto.nombre ILIKE '%cajero%'
-  // Ahora filtra por rol.nombre = 'CAJERO'
+  //Cajeros de la sucursal
   async obtenerCajerosDeSucursal(id_sucursal: number) {
     const result = await this.pool.query(
       `SELECT e.id_empleado, CONCAT(e.nombre, ' ', e.apellido) AS nombre

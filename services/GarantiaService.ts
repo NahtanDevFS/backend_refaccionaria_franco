@@ -9,7 +9,7 @@ import {
 export class GarantiaService {
   constructor(private readonly pool: Pool) {}
 
-  // ── Crear solicitud de garantía ───────────────────────────────────────────
+  // Crear solicitud de garantía
   async crearGarantia(data: CrearGarantiaDTO): Promise<number> {
     const client = await this.pool.connect();
     try {
@@ -36,7 +36,6 @@ export class GarantiaService {
       if (garantia_dias <= 0)
         throw new Error("Este producto no tiene garantía.");
 
-      // Reclamos previos — estado ahora via JOIN al catálogo
       const reclamosPrevios = await client.query(
         `SELECT COALESCE(SUM(g.cantidad), 0) AS total_reclamado
          FROM garantia g
@@ -62,7 +61,6 @@ export class GarantiaService {
           `El plazo de garantía de ${garantia_dias} días ha expirado.`,
         );
 
-      // id_estado_garantia via subquery al catálogo
       const insertRes = await client.query(
         `INSERT INTO garantia (id_detalle_venta, cantidad, motivo_reclamo, id_estado_garantia)
          VALUES (
@@ -83,13 +81,12 @@ export class GarantiaService {
     }
   }
 
-  // ── Aprobar o rechazar una garantía ───────────────────────────────────────
+  // Aprobar o rechazar una garantía
   async resolverGarantia(data: ResolverGarantiaDTO): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
 
-      // estado ahora via JOIN al catálogo
       const garRes = await client.query(
         `SELECT eg.nombre AS estado, g.cantidad, dv.id_producto, v.id_sucursal
          FROM garantia g
@@ -107,7 +104,6 @@ export class GarantiaService {
 
       const nuevoEstado = data.aprobado ? "aprobada" : "rechazada";
 
-      // UPDATE estado via subquery al catálogo
       await client.query(
         `UPDATE garantia
          SET id_estado_garantia = (
@@ -120,7 +116,6 @@ export class GarantiaService {
       );
 
       if (data.aprobado) {
-        // Bloquear en reorden_producto_sucursal (reemplaza producto_sucursal)
         const rpsRes = await client.query(
           `SELECT rps.id_reorden
            FROM reorden_producto_sucursal rps
@@ -160,8 +155,6 @@ export class GarantiaService {
         const nueva_cantidad =
           Number(stockRes.rows[0].cantidad_actual) - Number(garantia.cantidad);
 
-        // id_reorden reemplaza id_producto_sucursal
-        // id_tipo_movimiento (FK) reemplaza tipo (VARCHAR)
         const movRes = await client.query(
           `INSERT INTO movimiento_inventario
              (id_reorden, id_usuario, id_tipo_movimiento, cantidad,
@@ -200,7 +193,7 @@ export class GarantiaService {
     }
   }
 
-  // ── Solicitudes pendientes de revisión ────────────────────────────────────
+  //  Solicitudes pendientes de revisión
   async obtenerPendientes(id_sucursal: number): Promise<any[]> {
     const res = await this.pool.query(
       `SELECT
@@ -235,9 +228,7 @@ export class GarantiaService {
     }));
   }
 
-  // ── Garantías aprobadas pendientes de inspección técnica ──────────────────
-  // inspeccion_retorno fue eliminada en v2 — la inspección se registra
-  // directamente en garantia (fecha_inspeccion + id_resultado_inspeccion)
+  // Garantías aprobadas pendientes de inspección técnica
   async obtenerPendientesInspeccion(id_sucursal: number): Promise<any[]> {
     const res = await this.pool.query(
       `SELECT
@@ -258,14 +249,7 @@ export class GarantiaService {
     return res.rows.map((row) => ({ ...row, cantidad: Number(row.cantidad) }));
   }
 
-  // ── Registrar inspección técnica ──────────────────────────────────────────
-  // MIGRACIÓN: ya no existe inspeccion_retorno.
-  // La inspección se registra directamente sobre la fila de garantia:
-  //   - id_empleado_inspecciona
-  //   - id_resultado_inspeccion (FK → resultado_inspeccion)
-  //   - observaciones
-  //   - fecha_inspeccion
-  // lote_reacondicionado usa id_garantia en lugar de id_inspeccion
+  // Registrar inspección técnica
   async inspeccionarRetorno(data: InspeccionarRetornoDTO): Promise<number> {
     const client = await this.pool.connect();
     try {
@@ -305,8 +289,7 @@ export class GarantiaService {
         ],
       );
 
-      // Si el resultado es reventa → crear lote reacondicionado
-      // id_garantia reemplaza id_inspeccion en lote_reacondicionado
+      // Si el resultado es reventa, crear lote reacondicionado
       if (data.resultado === "aprobado_reventa") {
         const infoRes = await client.query(
           `SELECT dv.id_producto, v.id_sucursal, g.cantidad,
@@ -337,7 +320,7 @@ export class GarantiaService {
 
       await client.query("COMMIT");
 
-      // Retornamos id_garantia como id_inspeccion para compatibilidad con el controller
+      // Retorna id_garantia como id_inspeccion
       return data.id_garantia;
     } catch (error) {
       await client.query("ROLLBACK");
@@ -347,7 +330,7 @@ export class GarantiaService {
     }
   }
 
-  // ── Historial de garantías (usa la vista v_historial_garantias) ───────────
+  //Historial de garantías (usa la vista v_historial_garantias)
   async obtenerHistorial(
     id_sucursal: number,
     search?: string,
@@ -391,7 +374,6 @@ export class GarantiaService {
     const countQuery = `SELECT COUNT(*) FROM v_historial_garantias v_hist ${whereClause}`;
 
     paramIndex++;
-    // destino ya no existe en la vista v2; se retorna null para compat. del frontend
     const dataQuery = `
       SELECT
         v_hist.id_garantia,
@@ -416,8 +398,6 @@ export class GarantiaService {
     ]);
 
     return {
-      // destino y condicion_recibido y fecha_recepcion no existen en v2;
-      // se retornan como null para que el frontend los maneje con optional chaining
       data: dataRes.rows.map((row) => ({
         ...row,
         destino: null,
@@ -428,7 +408,7 @@ export class GarantiaService {
     };
   }
 
-  // ── Lotes reacondicionados disponibles ────────────────────────────────────
+  // Lotes reacondicionados disponibles
   async obtenerReacondicionadosDisponibles(
     id_sucursal: number,
   ): Promise<any[]> {

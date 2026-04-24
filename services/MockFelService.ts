@@ -12,11 +12,10 @@ export class MockFelService implements IFacturacionService {
       `[FEL Mock] Procesando factura para venta ${id_venta} por un total de Q${total}...`,
     );
 
-    //Simulamos latencia de red de 800ms para hacerlo realista
     await new Promise((resolve) => setTimeout(resolve, 800));
 
     const dteGenerado = {
-      uuid_dte: randomUUID(), //Generamos un DTE falso
+      uuid_dte: randomUUID(),
       fecha_certificacion: new Date(),
     };
 
