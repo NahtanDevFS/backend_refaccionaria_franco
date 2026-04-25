@@ -11,7 +11,7 @@ export class AuthService {
 
   constructor(private readonly pool: Pool) {}
 
-  //Registro (ruta comentada en producción, mantenida para completitud)
+  //Registro
   async registrar(dto: RegistrarUsuarioDTO) {
     const passwordHash = await bcrypt.hash(dto.password, this.SALT_ROUNDS);
 
