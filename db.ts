@@ -44,3 +44,24 @@ export function obtenerPoolPorRol(rol: string): Pool {
 
   return poolCache[rol];
 }
+
+/**
+ Destruye todas las conexiones del pool asociado a un rol y lo elimina del caché, la próxima request creará un pool nuevo, donde postgresql reevaluará los permisos vigentes del usuario.
+ Se llama automáticamente desde el middleware de db cuando Postgresql retorna el código de error 42501 (insufficient_privilege).
+ */
+export async function invalidarPoolPorRol(rol: string): Promise<void> {
+  const pool = poolCache[rol];
+  if (!pool) return;
+
+  try {
+    await pool.end(); //cierra todas las conexiones activas e inactivas
+  } catch (err) {
+    //Si el pool ya estaba roto, ignoramos el error de cierre
+    console.warn(`[DB] Advertencia al cerrar pool de rol "${rol}":`, err);
+  } finally {
+    delete poolCache[rol];
+    console.log(
+      `[DB] Pool del rol "${rol}" invalidado. Se recreará en la próxima request.`,
+    );
+  }
+}

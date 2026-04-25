@@ -400,7 +400,7 @@ export class GarantiaService {
     return {
       data: dataRes.rows.map((row) => ({
         ...row,
-        destino: null,
+        destino: row.dictamen ?? null,
         condicion_recibido: null,
         fecha_recepcion: null,
       })),
