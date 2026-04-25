@@ -75,7 +75,7 @@ export class VentaController {
     res: Response,
   ): Promise<void> => {
     try {
-      const idSucursal = requireSucursal(req); // ✅ era: req.usuario!.id_sucursal
+      const idSucursal = requireSucursal(req);
       const vendedores = await this.ventaService.obtenerVendedores(idSucursal);
       res.status(200).json({ success: true, data: vendedores });
     } catch (error) {

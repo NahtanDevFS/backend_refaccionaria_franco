@@ -3,10 +3,6 @@ import { Request, Response } from "express";
 import { AdminService } from "../services/AdminService";
 import { z, ZodError } from "zod";
 
-// MIGRACIÓN:
-//  - id_puesto eliminado (tabla puesto no existe en v2)
-//  - salario_base y fecha_ingreso eliminados (historial_salario no existe en v2)
-//  - el rol del empleado se define con id_rol directo en usuario
 const crearEmpleadoSchema = z.object({
   nombre: z.string().min(2, "Nombre requerido"),
   apellido: z.string().min(2, "Apellido requerido"),
@@ -67,7 +63,6 @@ export class AdminController {
   };
 
   // GET /admin/catalogos
-  // MIGRACIÓN: puestos eliminado — se devuelve roles en su lugar
   obtenerCatalogos = async (req: Request, res: Response): Promise<void> => {
     try {
       const [sucursales, roles, tipos_cliente] = await Promise.all([

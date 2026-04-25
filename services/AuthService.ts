@@ -57,14 +57,14 @@ export class AuthService {
     const result = await this.pool.query(query, [dto.username]);
     const usuario = result.rows[0] ?? null;
 
-    if (!usuario) throw new Error("No tienes permiso de acceso");
+    if (!usuario) throw new Error("Credenciales inválidas");
 
     //Verificar contraseña
     const esPasswordValido = await bcrypt.compare(
       dto.password,
       usuario.password_hash,
     );
-    if (!esPasswordValido) throw new Error("No tienes permiso de acceso");
+    if (!esPasswordValido) throw new Error("Credenciales inválidas");
 
     //Verificar que el usuario de PostgreSQL asociado al rol sigue teniendo permisos activos
     await this.verificarPermisosRolEnBD(usuario.rol);
